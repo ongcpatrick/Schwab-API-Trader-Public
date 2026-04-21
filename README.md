@@ -1,113 +1,119 @@
 # Schwab AI Trader
 
-A self-hosted, AI-powered portfolio management dashboard built on the **Charles Schwab brokerage API** and **Claude**. Runs entirely on your own machine — your data never touches a third-party server.
+**An AI-powered trading copilot built on the Charles Schwab API and Claude — running live on my personal brokerage account.**
 
-> **Live in production.** This is the actual system I use to manage my personal brokerage account. The autonomous routines run daily on a Railway server and commit research notes to git.
+Every morning at 8 AM, an AI agent reads the market, checks my positions, scans my watchlist, and sends me a briefing. If it finds a trade worth making, it texts me. I tap Approve. The order goes in. I didn't write a single trading rule — I built the system that thinks through them.
+
+This is not a backtest. This is not a paper trading demo. This runs on real money.
 
 ---
 
-## Screenshots
-
-### Opportunity Queue — AI-researched trade ideas, nothing executes without your approval
 ![Opportunity Queue](docs/opportunity-queue.png)
 
-### One-tap Trade Approval — SMS and email with green Approve / red Deny buttons
+The dashboard surfaces AI-researched trade ideas ranked by conviction. Each card has a full fundamental thesis written by Claude — Piotroski scores, revenue growth, analyst upside, earnings windows, sector momentum. Nothing executes without your explicit approval.
+
+---
+
+## The problem it solves
+
+Managing a stock portfolio requires attention at the wrong times — premarket, during earnings, when a position breaks down at 2 PM. Most people either over-trade trying to stay on top of it, or under-react because they're busy living their life.
+
+This system watches so I don't have to. It reads news on my positions, checks exit thresholds, monitors concentration risk, and surfaces decisions — not noise. I stay in control of every order. The AI handles the research and the vigilance.
+
+---
+
+## How a trade gets proposed
+
+The buy scan runs on a schedule. Claude pulls live portfolio data, checks the watchlist, reads fundamentals from EDGAR and yfinance, pulls recent news, and runs a multi-round analysis loop. If a position meets the buy criteria — analyst upside, earnings clearance, sector momentum — it generates a proposal and sends it to me.
+
+That proposal lands in my inbox as an HTML email with a green **Approve** button and a red **Deny** button.
+
 ![Email Approval](docs/email-approval.png)
 
-### Enter Order — Configure shares, order type, and limit price
+Tap Approve. A confirmation page loads. Review the details. Hit Place Order. Done. The whole flow works from your phone without ever opening the dashboard. Tokens expire after 24 hours — no stale approvals sitting around.
+
+---
+
+## The order flow
+
+Approving a proposal opens a clean three-step flow: configure shares and order type, review the full order summary, and place it directly on your Schwab account.
+
 ![Enter Order](docs/order-review.png)
 
-### Order Review — Confirm details before placing on Schwab
 ![Order Review](docs/review-screen.png)
 
-### Holdings — Real-time positions, P&L, cost basis, day change
+Every order runs through a risk policy check before it ever reaches Schwab — kill switch, daily loss cap, position size limits, max open positions. The guardrails are enforced in code, not discipline.
+
+---
+
+## Your full portfolio, always current
+
+The Holdings view pulls live data directly from Schwab — positions, day P&L, cost basis, unrealized gains, sector allocation. No manual entry. No syncing. It's your actual account.
+
 ![Holdings](docs/holdings.png)
 
-### Performance — Equity curve vs SPY, Sharpe ratio, max drawdown, win rate
-![Performance](docs/performance.png)
+---
 
-### Risk Monitor — AI-flagged exit candidates with thesis analysis
+## Risk monitoring that never sleeps
+
+The risk monitor scans every 30 minutes while the market is open. It flags concentration risk, positions approaching earnings, drawdowns past exit thresholds, and large unrealized gains that might be worth locking in. When something needs attention, it sends an SMS.
+
+When it finds a position that needs to be cut, it generates a sell proposal with the same approve/deny flow.
+
 ![Risk Monitor](docs/risk-monitor.png)
 
-### Morning Briefing — AI-generated daily briefing + news feed for your holdings
+---
+
+## Every morning starts with a briefing
+
+At 8 AM ET, a Claude Code agent runs the pre-market routine. It reads macro conditions, checks news on every position I hold, looks at analyst upgrades and downgrades, and writes a briefing — committed directly to the repo as a markdown file. By the time the market opens, I know exactly what to watch.
+
 ![Morning Briefing](docs/briefing.png)
 
 ---
 
-## What it does
+## Performance tracked from real history
 
-| Feature | Description |
-|---|---|
-| **Live Portfolio** | Real-time positions, P&L, cost basis, and sector allocation from Schwab |
-| **AI Buy Scan** | Claude scans a curated watchlist, researches fundamentals + news, and proposes high-conviction buys — sent via SMS and email with one-tap Approve/Deny links |
-| **AI Sell Scan** | Claude reviews open positions for exit candidates (loss thresholds, thesis breaks, concentration risk) — same approve/deny flow |
-| **One-tap Trade Approval** | Tap Approve in SMS or email → confirmation page → Place Order → live Schwab order. No app needed. |
-| **AI Portfolio Advisor** | Streaming chat powered by Claude with live tool-calling — fetches your portfolio, news, price history, and earnings before answering |
-| **Risk Monitor** | Background scanner flags concentration risk, earnings proximity, drawdowns, and large gains every 30 minutes |
-| **Performance Tracking** | Equity curve from your full transaction history with period filters (1M / 3M / 6M / 1Y / ALL) |
-| **Earnings Calendar** | Upcoming earnings and key fundamentals for every position you hold |
-| **AI News Feed** | Headlines for your holdings triaged by severity with analyst impact summaries |
-| **Trade Journal** | Completed trades reconstructed from order history — win rate, expectancy, per-symbol stats |
-| **Intermarket Analysis** | Yield curve, DXY, VIX, and sector rotation signals via FRED + market data |
-| **SMS + Email Alerts** | Twilio SMS and SMTP email with HTML approve/deny buttons for every trade proposal |
-| **Customizable Dashboard** | Adjustable alert thresholds, buy scan budget, email upside filter — all from the UI |
+The performance page reconstructs your equity curve from actual Schwab order history — no manual logging, no estimates. Toggle between 1M / 3M / 6M / 1Y / ALL, compare against SPY, and see Sharpe ratio, max drawdown, best/worst day, and win rate.
 
----
-
-## How trade approval works
-
-```
-Buy/sell scan runs (scheduled or manual)
-    └── Claude researches candidates with live tools
-            get_portfolio · get_news · get_price_history
-            get_stock_fundamentals · get_earnings_calendar
-        └── Generates proposals with 24-hour approval tokens
-            └── SMS: "BUY 5 NVDA @ $142.50 ~$712  ✅ approve  ❌ deny"
-            └── Email: HTML card with green Approve / red Deny buttons
-                └── Tap Approve → confirmation page → Place Order
-                    └── Kill switch check → Risk policy check → Schwab preview → Live order
-```
-
-Nothing executes without your explicit tap. Tokens expire after 24 hours.
+![Performance](docs/performance.png)
 
 ---
 
 ## Autonomous daily routines
 
-The `routines/` directory contains five Claude Code cloud agent prompts that run on a market schedule. They deploy to Railway (always-on server) and commit research notes and snapshots to the `memory/` directory as persistent state across sessions.
-
-```
-Claude Code cloud routines (Railway, scheduled)
-    └── scripts/schwab_server.sh <subcommand>   ← calls FastAPI server
-            └── FastAPI server (Railway)          ← handles Schwab OAuth
-                    └── Schwab API               ← real brokerage data
-
-Memory persistence: routines commit memory/*.md to git after each run.
-```
+Five Claude Code agents run on a market schedule, deployed on Railway. They call the FastAPI server, do their analysis, and commit their findings to a `memory/` directory in the repo as plain markdown files. Claude reads those files at the start of every session — persistent context without a database.
 
 | Routine | Schedule | What it does |
 |---|---|---|
-| `pre-market.md` | 8:00 AM ET | Macro snapshot, held-position thesis checks, watchlist scan, account briefing |
+| `pre-market.md` | 8:00 AM ET | Macro snapshot, thesis checks, watchlist scan, daily briefing |
 | `market-open.md` | 9:45 AM ET | Validates buy signals, triggers buy scan if conditions are met |
-| `midday.md` | 12:00 PM ET | Thesis check on news, exit threshold review, flags for user action |
-| `daily-summary.md` | 4:15 PM ET | EOD P&L snapshot, position log, commits to `memory/TRADE-LOG.md` |
+| `midday.md` | 12:00 PM ET | News check on positions, exit threshold review, flags for user action |
+| `daily-summary.md` | 4:15 PM ET | EOD P&L snapshot committed to `memory/TRADE-LOG.md` |
 | `weekly-review.md` | Friday 4:00 PM ET | Full week review — alpha vs S&P, rule adherence, strategy updates |
 
-All research and decisions are written to `memory/RESEARCH-LOG.md` and `memory/TRADE-LOG.md` — plain markdown files committed to git, so Claude has persistent context across every session without a database.
+```
+Claude Code cloud routines (Railway, scheduled)
+    └── scripts/schwab_server.sh        ← bash wrapper for all server calls
+            └── FastAPI server           ← handles Schwab OAuth + data
+                    └── Schwab API       ← real brokerage
 
-See [`routines/README.md`](routines/README.md) for Railway + Claude Code setup instructions.
+Memory: routines commit memory/*.md to git → Claude reads them next session
+```
+
+See [`routines/README.md`](routines/README.md) for the full Railway + Claude Code setup.
 
 ---
 
 ## Tech stack
 
 - **Backend:** Python 3.13, FastAPI, Uvicorn
-- **AI:** Anthropic Claude (`claude-sonnet-4-6`) with multi-round tool-calling agent loop
+- **AI:** Anthropic Claude (`claude-sonnet-4-6`) — multi-round tool-calling agent loop
 - **Brokerage:** Charles Schwab Individual Trader API (OAuth 2.0, PKCE)
 - **Market data:** yfinance, FRED API, SEC EDGAR
-- **Notifications:** Twilio SMS + SMTP email
+- **Notifications:** Twilio SMS + SMTP email with HTML approve/deny buttons
 - **Frontend:** Vanilla JS, Chart.js — no framework, no build step
-- **Deployment:** Railway (server), Claude Code scheduled agents (routines)
+- **Deployment:** Railway (always-on server), Claude Code (scheduled routines)
 
 ---
 
@@ -115,27 +121,24 @@ See [`routines/README.md`](routines/README.md) for Railway + Claude Code setup i
 
 ```
 schwab_trader/
-├── advisor/        # Claude streaming chat agent (tool-calling loop)
-├── agent/          # Buy/sell scan + background risk monitor + alert store
-│   ├── monitor.py  # Rule-based flag detection (drawdown, concentration, earnings)
-│   ├── service.py  # Buy scan, sell scan, briefing generation
+├── advisor/        # Claude streaming chat with live tool-calling
+├── agent/          # Buy/sell scan, risk monitor, alert store
+│   ├── monitor.py  # Rule-based flag detection
+│   ├── service.py  # Scan orchestration
 │   └── tools.py    # get_portfolio · get_news · get_price_history
 │                   # get_earnings_calendar · get_stock_fundamentals
-├── auth/           # Schwab OAuth 2.0 + token management
-├── broker/         # Schwab API wrapper (accounts, orders, quotes, price history)
-├── earnings/       # yfinance earnings calendar + fundamentals
-├── edgar/          # SEC EDGAR filing data
-├── execution/      # Kill switch → risk checks → order preview → place_order
-├── fred/           # FRED macroeconomic indicators (yield curve, CPI, DXY)
+├── auth/           # Schwab OAuth 2.0 + PKCE token management
+├── broker/         # Schwab API wrapper
+├── execution/      # Kill switch → risk checks → preview → place_order
+├── fred/           # FRED macroeconomic data
 ├── intermarket/    # Cross-asset signal aggregation
-├── journal/        # Trade reconstruction from order history + scorecard metrics
-├── news/           # AI-triaged news feed
-├── notifications/  # Twilio SMS + SMTP HTML email with approval tokens
-├── performance/    # Equity curve from full transaction history
+├── journal/        # Trade reconstruction + scorecard metrics
+├── notifications/  # Twilio SMS + SMTP email with approval tokens
+├── performance/    # Equity curve from full order history
 ├── risk/           # Position risk models and policy engine
-├── screening/      # Watchlist scoring (momentum + fundamentals)
+├── screening/      # Watchlist scoring
 ├── thesis/         # AI thesis validation per position
-└── server/         # FastAPI app + routes + single-file dashboard HTML
+└── server/         # FastAPI app + single-file dashboard HTML
 ```
 
 ---
@@ -161,10 +164,10 @@ uv sync
 
 ```bash
 cp .env.example .env
-# Edit .env with your credentials
+# Edit .env — four required keys, everything else is optional
 ```
 
-Required:
+**Required:**
 ```env
 SCHWAB_TRADER_SCHWAB_APP_KEY=your_schwab_app_key
 SCHWAB_TRADER_SCHWAB_APP_SECRET=your_schwab_app_secret
@@ -172,7 +175,7 @@ SCHWAB_TRADER_SCHWAB_CALLBACK_URL=http://127.0.0.1:8000/auth/callback
 SCHWAB_TRADER_ANTHROPIC_API_KEY=your_anthropic_api_key
 ```
 
-Optional — enables SMS + email trade approvals:
+**Optional — SMS + email trade approvals:**
 ```env
 SCHWAB_TRADER_TWILIO_ACCOUNT_SID=
 SCHWAB_TRADER_TWILIO_AUTH_TOKEN=
@@ -185,9 +188,9 @@ SCHWAB_TRADER_ALERT_EMAIL_ADDRESS=you@gmail.com
 SCHWAB_TRADER_DASHBOARD_URL=http://YOUR_LOCAL_IP:8000
 ```
 
-Optional — enables macroeconomic indicators in the dashboard:
+**Optional — macroeconomic indicators:**
 ```env
-SCHWAB_TRADER_FRED_API_KEY=   # Free key at https://fred.stlouisfed.org/docs/api/api_key.html
+SCHWAB_TRADER_FRED_API_KEY=   # Free at https://fred.stlouisfed.org/docs/api/api_key.html
 ```
 
 See `.env.example` for the full list including risk guardrails and alert thresholds.
@@ -196,25 +199,25 @@ See `.env.example` for the full list including risk guardrails and alert thresho
 
 ```bash
 ./start.sh
-# or manually:
-uv run uvicorn schwab_trader.server.app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Open `http://127.0.0.1:8000` to complete Schwab OAuth, then go to `http://127.0.0.1:8000/dashboard`.
+Open `http://127.0.0.1:8000` to complete Schwab OAuth. You'll be redirected to the dashboard automatically.
 
 ---
 
 ## Safety
 
-- **Kill switch** — `SCHWAB_TRADER_LIVE_ORDER_KILL_SWITCH=true` blocks all order execution instantly, no code changes needed
-- **Risk policy** — every order goes through configurable daily loss limits, position size caps, and max open position checks before preview or placement
-- **Human in the loop** — buy and sell proposals require explicit approval via SMS or email; nothing executes autonomously
-- **Token expiry** — approval tokens expire after 24 hours
-- **Audit log** — all order activity written to `.data/audit.jsonl`
-- **Credentials stay local** — `.env`, token files, and trade data are all gitignored
+This system places real orders. The guardrails are not optional:
+
+- **Kill switch** — flip `SCHWAB_TRADER_LIVE_ORDER_KILL_SWITCH=true` to block all order execution instantly without changing any code
+- **Risk policy** — every order checks daily loss limits, position size caps, and max open positions before it reaches Schwab
+- **Human in the loop** — no order executes without your explicit tap on an approve link; the AI proposes, you decide
+- **Token expiry** — approval tokens are single-use and expire after 24 hours
+- **Audit log** — every order attempt (approved, denied, or blocked) is written to `.data/audit.jsonl`
+- **Credentials stay local** — `.env`, tokens, and trade data are all gitignored and never leave your machine
 
 ---
 
 ## Disclaimer
 
-This is a personal tool for educational and informational purposes. It places **real orders** on your brokerage account — always review proposals carefully before confirming. Past performance of any strategy shown does not guarantee future results. This is not financial advice.
+This is a personal project for educational and informational purposes. It places **real orders** on your brokerage account. Always review proposals carefully before approving. Past performance does not guarantee future results. This is not financial advice.
