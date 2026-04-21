@@ -52,6 +52,14 @@ The Holdings view pulls live data directly from Schwab. Positions, day P&L, cost
 
 ---
 
+## Congressional and insider trade tracking
+
+The Insiders tab pulls congressional and corporate insider trades from Quiver Quantitative. See what House and Senate members are buying and selling in real time, alongside executive-level SEC filings for your holdings. Free API key at [quiverquant.com](https://quiverquant.com).
+
+![Insider Trading](docs/insider-trading.png)
+
+---
+
 ## Risk monitoring that never sleeps
 
 The risk monitor scans every 30 minutes while the market is open. It flags concentration risk, positions approaching earnings, drawdowns past exit thresholds, and gains that might be worth locking in. When something needs attention it sends an SMS. When it finds a position that should be cut it generates a sell proposal through the same approve/deny flow.
@@ -197,7 +205,9 @@ See `.env.example` for the full list including risk guardrails and alert thresho
 ./start.sh
 ```
 
-Open `http://127.0.0.1:8000` to complete Schwab OAuth. You'll be redirected to the dashboard automatically.
+Open `http://127.0.0.1:8000` to complete Schwab OAuth. Once connected you'll see this screen and get redirected to the dashboard automatically.
+
+![Schwab Connected](docs/schwab-connector.png)
 
 ---
 
