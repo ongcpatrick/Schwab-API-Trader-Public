@@ -149,7 +149,7 @@ def exchange_code(
     )
 
 
-@router.get("/auth/callback", response_model=AuthCallbackResponse)
+@router.get("/auth/callback")
 def auth_callback(
     code: Annotated[str | None, Query()] = None,
     session: Annotated[str | None, Query()] = None,
@@ -159,8 +159,8 @@ def auth_callback(
     oauth_service: Annotated[SchwabOAuthService, Depends(get_oauth_service)] = ...,
     session_store: Annotated[OAuthSessionStore, Depends(get_oauth_session_store)] = ...,
     token_store: Annotated[FileTokenStore, Depends(get_token_store)] = ...,
-) -> AuthCallbackResponse:
-    """Handle the local OAuth callback and persist the exchanged token."""
+) -> RedirectResponse:
+    """Handle the Schwab OAuth callback, exchange the code, and redirect to dashboard."""
 
     if error is not None:
         detail = error_description or error
@@ -177,7 +177,7 @@ def auth_callback(
         oauth_service=oauth_service,
         token_store=token_store,
     )
-    return AuthCallbackResponse(message="Schwab authorization completed.", session=session)
+    return RedirectResponse(url="/dashboard", status_code=status.HTTP_302_FOUND)
 
 
 @router.get("/api/v1/auth/status", response_model=AuthStatusResponse)
