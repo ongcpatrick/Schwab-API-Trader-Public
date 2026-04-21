@@ -6,11 +6,28 @@ A self-hosted, AI-powered portfolio management dashboard built on the **Charles 
 
 ---
 
-## Dashboard
+## Screenshots
 
-![Dashboard](docs/screenshot.png)
+### Opportunity Queue — AI-researched trade ideas, nothing executes without your approval
+![Opportunity Queue](docs/opportunity-queue.png)
 
-> _Add a screenshot of your running dashboard here — take one at `http://localhost:8000/dashboard` and save it to `docs/screenshot.png`._
+### One-tap Trade Approval — SMS and email with green Approve / red Deny buttons
+![Email Approval](docs/email-approval.png)
+
+### 3-Step Order Review — Enter → Review → Placed
+![Order Review](docs/order-review.png)
+
+### Holdings — Real-time positions, P&L, cost basis, day change
+![Holdings](docs/holdings.png)
+
+### Performance — Equity curve vs SPY, Sharpe ratio, max drawdown, win rate
+![Performance](docs/performance.png)
+
+### Risk Monitor — AI-flagged exit candidates with thesis analysis
+![Risk Monitor](docs/risk-monitor.png)
+
+### Morning Briefing — AI-generated daily briefing + news feed for your holdings
+![Morning Briefing](docs/briefing.png)
 
 ---
 
