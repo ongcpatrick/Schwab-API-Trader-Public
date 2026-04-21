@@ -14,8 +14,11 @@ A self-hosted, AI-powered portfolio management dashboard built on the **Charles 
 ### One-tap Trade Approval — SMS and email with green Approve / red Deny buttons
 ![Email Approval](docs/email-approval.png)
 
-### 3-Step Order Review — Enter → Review → Placed
-![Order Review](docs/order-review.png)
+### Enter Order — Configure shares, order type, and limit price
+![Enter Order](docs/order-review.png)
+
+### Order Review — Confirm details before placing on Schwab
+![Order Review](docs/review-screen.png)
 
 ### Holdings — Real-time positions, P&L, cost basis, day change
 ![Holdings](docs/holdings.png)
