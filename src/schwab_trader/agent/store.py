@@ -237,6 +237,8 @@ class AlertStore:
             ts_raw = alert.get("timestamp", "")
             try:
                 ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=UTC)
             except Exception:
                 continue
             if ts < cutoff:

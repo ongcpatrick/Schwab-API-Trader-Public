@@ -10,6 +10,10 @@ import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
+# yfinance logs HTTP 404 errors at WARNING level when ETFs lack quoteSummary data.
+# These are expected and noisy — suppress them.
+logging.getLogger("yfinance").setLevel(logging.ERROR)
+
 
 def _safe_float(val: Any, default: float = 0.0) -> float:
     try:

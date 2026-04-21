@@ -4523,8 +4523,15 @@ def _live_dashboard_html() -> str:
         r = await fetch('/api/v1/agent/place-sell-order', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
         d = await r.json();
       } else {
-        // BUY — execute the existing proposal
-        r = await fetch('/api/v1/agent/proposals/' + pendingProposalId + '/execute', { method:'POST' });
+        // BUY — execute the existing proposal with user-adjusted qty and price
+        const buyPayload = {};
+        if (qty) buyPayload.quantity = qty;
+        if (price) buyPayload.limit_price = price;
+        r = await fetch('/api/v1/agent/proposals/' + pendingProposalId + '/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(buyPayload),
+        });
         d = await r.json();
       }
       if (!r.ok) throw new Error(d.detail || 'Order failed');

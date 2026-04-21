@@ -648,7 +648,7 @@ class ToolExecutor:
     def get_macro_context(self) -> str:
         """Market regime snapshot: VIX, SPY/QQQ vs 200MA, sector ETF momentum."""
 
-        INDICES = ["SPY", "QQQ", "VIX"]
+        INDICES = ["SPY", "QQQ", "^VIX"]
         SECTORS = {
             "XLK": "Tech",
             "SMH": "Semiconductors",
@@ -692,7 +692,7 @@ class ToolExecutor:
                 data[sym] = d
 
         # VIX regime signal
-        vix = data.get("VIX", {}).get("price", 20)
+        vix = data.get("^VIX", {}).get("price", 20)
         if vix < 15:
             vix_regime = "low_fear (bullish)"
         elif vix < 20:

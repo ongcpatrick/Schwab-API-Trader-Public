@@ -145,13 +145,23 @@ def deny_alert(alert_id: str) -> dict:
     return {"status": "denied"}
 
 
+class ProposalExecuteOverrides(BaseModel):
+    quantity: int | None = None
+    limit_price: float | None = None
+
+
 @router.post("/proposals/{proposal_id}/execute")
 def execute_proposal(
     proposal_id: str,
     request: Request,
     broker_service: Annotated[SchwabBrokerService, Depends(get_broker_service)],
+    overrides: ProposalExecuteOverrides = Body(default_factory=ProposalExecuteOverrides),
 ) -> dict:
-    """Preview then execute a trade proposal after user confirmation."""
+    """Preview then execute a trade proposal after user confirmation.
+
+    Accepts optional quantity and limit_price overrides so the dashboard user
+    can adjust the AI-proposed values before placing the order.
+    """
     _check_cooldown(f"proposal:{proposal_id}")
 
     proposal, _ = _store.find_proposal_by_id(proposal_id)
@@ -161,9 +171,16 @@ def execute_proposal(
     if proposal.get("status") == "executed":
         raise HTTPException(status_code=409, detail="Proposal already executed")
 
+    # Apply user overrides — copy so we don't mutate the stored proposal
+    effective_proposal = dict(proposal)
+    if overrides.quantity is not None:
+        effective_proposal["quantity"] = overrides.quantity
+    if overrides.limit_price is not None:
+        effective_proposal["limit_price"] = overrides.limit_price
+
     try:
         result = _get_execution_service(broker_service).execute_proposal(
-            proposal,
+            effective_proposal,
             source="dashboard",
         )
     except ProposalExecutionError as exc:
@@ -173,8 +190,8 @@ def execute_proposal(
     _store.update_proposal_status(proposal_id, "executed")
 
     # Attach target (+30%) and stop (-15%) prices for exit monitoring
-    limit_price = proposal.get("limit_price")
-    if proposal.get("action") == "BUY" and limit_price:
+    limit_price = effective_proposal.get("limit_price")
+    if effective_proposal.get("action") == "BUY" and limit_price:
         entry = float(limit_price)
         _store.set_exit_targets(
             proposal_id,
