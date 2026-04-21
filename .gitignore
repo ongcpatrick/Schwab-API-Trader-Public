@@ -1,0 +1,23 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.data/
+.env
+.env.local
+.env.*.local
+*.token.json
+.schwab_token.json
+journal.db
+alerts.json
+.alerts.json
+performance.json
+*.DS_Store
+everything-claude-code-main/
+schwagent-master/
+schwagent-master.zip
+
+# Memory files with real trade data — keep local only
+memory/TRADE-LOG.md
+memory/RESEARCH-LOG.md
+memory/WEEKLY-REVIEW.md
