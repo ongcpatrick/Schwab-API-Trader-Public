@@ -155,6 +155,9 @@ schwab_trader/
 - [uv](https://docs.astral.sh/uv/) package manager
 - A [Schwab Developer App](https://developer.schwab.com) with Individual Trader API access
 - An [Anthropic API key](https://console.anthropic.com)
+- **thinkorswim enabled on your Schwab account** (required for API order placement)
+
+> **Important:** The Schwab API will authenticate and return account data just fine without thinkorswim, but live order placement will be rejected with "No trades are currently allowed" until TOS is enabled. To enable it, log in at schwab.com, go to Trade > Trading Platforms, and request thinkorswim access. It updates overnight.
 
 ### 1. Clone and install
 
