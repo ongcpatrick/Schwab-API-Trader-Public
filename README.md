@@ -2,9 +2,11 @@
 
 An AI-powered trading copilot built on the Charles Schwab API and Claude. Self-hosted, runs on your own machine, your data stays with you.
 
-Every morning at 5 AM Pacific, an AI agent reads the market, checks my positions, scans my watchlist, and sends me a briefing. If it finds a trade worth making, it texts me. I tap Approve. The order goes in.
+Every morning at 5 AM Pacific, an AI agent reads the market, checks my positions, scans the full S&P 500 for opportunities, and sends me a briefing. If it finds a trade worth making, it emails me. I tap Approve. The order goes in.
 
 Not a backtest. Not a paper trading demo. This runs on real money.
+
+If this is useful, a ⭐ helps others find it.
 
 ---
 
@@ -14,17 +16,36 @@ The dashboard shows AI-researched trade ideas ranked by conviction. Each card ha
 
 ---
 
-## The problem it solves
+## Why I built this
 
-Managing a portfolio takes attention at the wrong times. Premarket. During earnings. When a position starts sliding at 2 PM on a Tuesday. Most people either overtrade trying to stay on top of it, or check out entirely because life gets in the way.
+I got tired of the gap between the research tools professionals use and what retail investors actually have access to. Bloomberg terminals cost $24,000 a year. Every "AI investing app" I tried was either a chatbot that couldn't touch your account or a black-box algo that made trades without explanation.
 
-This watches so I don't have to. It reads news on my positions, checks exit thresholds, monitors concentration risk, and surfaces what needs a decision. I stay in control of every order. The research and the vigilance are handled.
+I wanted something that does the work a good analyst would do — read the news, check the fundamentals, look at insider activity, assess the macro — and then hands the decision back to me. This is that. It runs on my actual Schwab account, proposes trades with full written reasoning, and never executes anything I haven't explicitly approved.
+
+---
+
+## What this is NOT
+
+- **Not a robo-advisor.** It never trades without a human approving each order individually.
+- **Not a backtest or paper trading demo.** Everything shown is live account data and real orders.
+- **Not a black box.** Every proposal includes a full written thesis explaining exactly why the trade was suggested.
+- **Not financial advice.** This is a personal tool. It can be wrong. Always read the reasoning before approving.
 
 ---
 
 ## How a trade gets proposed
 
-The buy scan runs on a schedule. Claude pulls live portfolio data, reads fundamentals from EDGAR and yfinance, pulls recent news, and searches the full S&P 500 for candidates — not just a fixed watchlist. Every scan fetches all 503 S&P 500 constituents from Wikipedia, merges them with a curated seed list of high-growth names not yet in the index (PLTR, CRWD, AXON, HIMS, COIN, etc.), scores them by momentum, then runs Morningstar-style quality filters — FCF yield, return on equity, PEG ratio, revenue growth, and analyst upside — on the top movers. The top 15 scorers go to Claude for a 7-step deep research pass. If something meets the buy criteria it generates a proposal and sends it to me as an HTML email with a green **Approve** button and a red **Deny** button.
+The buy scan runs on a schedule. Claude pulls live portfolio data, reads fundamentals from EDGAR and yfinance, pulls recent news, and searches the full S&P 500 for candidates — not just a fixed watchlist. Every scan:
+
+1. Fetches all 503 S&P 500 constituents dynamically from Wikipedia
+2. Merges them with a curated seed list of high-growth names not yet in the index (PLTR, CRWD, AXON, HIMS, COIN, etc.)
+3. Pulls Schwab quotes for the entire ~550 stock universe in a single API call
+4. Sorts by momentum and takes the top 60 movers for deep analysis
+5. Runs Morningstar-style quality filters on those 60 — FCF yield, return on equity, PEG ratio, revenue growth, analyst upside
+6. Passes the top 15 scorers to Claude for a 7-step deep research pass: macro regime → portfolio fit → Piotroski F-score → technicals (RSI, 200-day MA) → insider buying → earnings estimate revisions → news and upcoming catalysts
+7. Proposes only if conviction is HIGH across all signals
+
+If something passes, it generates a proposal and sends it as an HTML email with a green **Approve** button and a red **Deny** button.
 
 ![Email Approval](docs/email-approval.png)
 
@@ -115,7 +136,7 @@ See [`routines/README.md`](routines/README.md) for the full Railway and Claude C
 - **AI:** Anthropic Claude (claude-sonnet-4-6) with a multi-round tool-calling agent loop
 - **Brokerage:** Charles Schwab Individual Trader API (OAuth 2.0, PKCE)
 - **Market data:** yfinance (fundamentals, FCF yield, ROE, PEG), FRED API, SEC EDGAR
-- **Stock discovery:** Full S&P 500 universe fetched dynamically from Wikipedia + curated growth seed list
+- **Stock discovery:** Full S&P 500 universe fetched dynamically + curated growth seed list
 - **Screening:** Momentum pre-filter → Morningstar-style quality scoring (FCF yield, ROE, PEG, revenue growth, analyst upside)
 - **Notifications:** Twilio SMS and SMTP email with HTML approve/deny buttons
 - **Frontend:** Vanilla JS, Chart.js, no framework, no build step
@@ -159,7 +180,7 @@ schwab_trader/
 - An [Anthropic API key](https://console.anthropic.com)
 - **thinkorswim enabled on your Schwab account** (required for API order placement)
 
-> **Important:** The Schwab API will authenticate and return account data just fine without thinkorswim, but live order placement will be rejected with "No trades are currently allowed" until TOS is enabled. To enable it, log in at schwab.com, go to Trade > Trading Platforms, and request thinkorswim access. It updates overnight.
+> **Important:** The Schwab API will authenticate and return account data without thinkorswim, but live order placement will be rejected with "No trades are currently allowed" until TOS is enabled. Log in at schwab.com → Trade → Trading Platforms → request thinkorswim access. It updates overnight.
 
 ### 1. Clone and install
 
@@ -173,7 +194,6 @@ uv sync
 
 ```bash
 cp .env.example .env
-# Four required keys, everything else is optional
 ```
 
 **Required:**
@@ -184,17 +204,23 @@ SCHWAB_TRADER_SCHWAB_CALLBACK_URL=http://127.0.0.1:8000/auth/callback
 SCHWAB_TRADER_ANTHROPIC_API_KEY=your_anthropic_api_key
 ```
 
-**Optional: SMS and email trade approvals**
+**Optional: email trade approvals (recommended)**
+```env
+SCHWAB_TRADER_EMAIL_SMTP_HOST=smtp.gmail.com
+SCHWAB_TRADER_EMAIL_SMTP_USER=you@gmail.com
+SCHWAB_TRADER_EMAIL_SMTP_PASSWORD=your_gmail_app_password
+SCHWAB_TRADER_ALERT_EMAIL_ADDRESS=you@gmail.com
+SCHWAB_TRADER_DASHBOARD_URL=http://YOUR_LOCAL_IP:8000
+```
+
+> **Gmail app password setup:** Go to [myaccount.google.com](https://myaccount.google.com) → Security → 2-Step Verification (must be on) → App passwords → create one named "Schwab Trader". Use the 16-character password it generates. Your regular Gmail password will not work here.
+
+**Optional: SMS alerts**
 ```env
 SCHWAB_TRADER_TWILIO_ACCOUNT_SID=
 SCHWAB_TRADER_TWILIO_AUTH_TOKEN=
 SCHWAB_TRADER_TWILIO_FROM_NUMBER=
 SCHWAB_TRADER_ALERT_PHONE_NUMBER=
-SCHWAB_TRADER_EMAIL_SMTP_HOST=smtp.gmail.com
-SCHWAB_TRADER_EMAIL_SMTP_USER=you@gmail.com
-SCHWAB_TRADER_EMAIL_SMTP_PASSWORD=your_app_password
-SCHWAB_TRADER_ALERT_EMAIL_ADDRESS=you@gmail.com
-SCHWAB_TRADER_DASHBOARD_URL=http://YOUR_LOCAL_IP:8000
 ```
 
 **Optional: macroeconomic indicators**
@@ -202,7 +228,7 @@ SCHWAB_TRADER_DASHBOARD_URL=http://YOUR_LOCAL_IP:8000
 SCHWAB_TRADER_FRED_API_KEY=   # Free at https://fred.stlouisfed.org/docs/api/api_key.html
 ```
 
-See `.env.example` for the full list including risk guardrails and alert thresholds.
+See `.env.example` for the full list including alert thresholds.
 
 ### 3. Start
 
@@ -210,7 +236,7 @@ See `.env.example` for the full list including risk guardrails and alert thresho
 ./start.sh
 ```
 
-Open `http://127.0.0.1:8000` to complete Schwab OAuth. Once connected you'll see this screen and get redirected to the dashboard automatically.
+Open `http://127.0.0.1:8000` to complete Schwab OAuth. Once connected you'll be redirected to the dashboard automatically.
 
 ![Schwab Connected](docs/schwab-connector.png)
 
@@ -218,17 +244,24 @@ Open `http://127.0.0.1:8000` to complete Schwab OAuth. Once connected you'll see
 
 ## Safety
 
-This system places real orders. The guardrails are not optional.
+This system places real orders. Set these before enabling live trading.
 
-- **Kill switch:** set `SCHWAB_TRADER_LIVE_ORDER_KILL_SWITCH=true` to block all order execution instantly without touching any code
-- **Risk policy:** every order checks daily loss limits, position size caps, and max open positions before it reaches Schwab
-- **Human in the loop:** nothing executes without your tap on an approve link. The AI proposes, you decide.
-- **Token expiry:** approval tokens are single-use and expire after 24 hours
-- **Audit log:** every order attempt is written to `.data/audit.jsonl`
-- **Credentials stay local:** `.env`, tokens, and trade data are all gitignored
+| Variable | Recommended | What it does |
+|---|---|---|
+| `SCHWAB_TRADER_LIVE_ORDER_KILL_SWITCH` | `false` | Set to `true` to instantly block all order execution |
+| `SCHWAB_TRADER_LIVE_ORDER_MAX_ORDER_NOTIONAL_DOLLARS` | `5000` | Maximum dollar size of any single order |
+| `SCHWAB_TRADER_LIVE_ORDER_MAX_DAILY_LOSS_DOLLARS` | `750` | Halt all trading if portfolio loses this much in one day |
+
+Additional guardrails built into every order:
+
+- **Human in the loop:** nothing executes without your tap on an approve link
+- **Schwab preview:** every order hits Schwab's preview endpoint before placement — you see the exact order Schwab would fill
+- **Single-use tokens:** approval links expire after 24 hours and cannot be reused
+- **Audit log:** every order attempt (approved, denied, blocked) is written to `.data/audit.jsonl`
+- **Credentials stay local:** `.env`, tokens, and trade data are all gitignored and never leave your machine
 
 ---
 
 ## Disclaimer
 
-This is a personal project for educational purposes. It places real orders on your brokerage account. Always review proposals before approving. Past performance does not guarantee future results. This is not financial advice.
+This is a personal project for educational purposes. It places real orders on your brokerage account. Always read the reasoning before approving a proposal. Past performance does not guarantee future results. This is not financial advice.
