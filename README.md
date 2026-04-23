@@ -185,8 +185,8 @@ schwab_trader/
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/ongcpatrick/Schwab-API-Trader-Public.git
-cd Schwab-API-Trader-Public
+git clone https://github.com/ongcpatrick/Schwab-AI-Trader-public.git
+cd Schwab-AI-Trader-public
 uv sync
 ```
 
