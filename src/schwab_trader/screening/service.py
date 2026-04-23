@@ -12,19 +12,31 @@ from schwab_trader.broker.service import SchwabBrokerService
 
 logger = logging.getLogger(__name__)
 
-# Curated universe: semis, AI infra, high-growth tech, growth ETFs
+# Diversified universe across sectors — semis, tech, financials, healthcare,
+# consumer, energy, industrials, and sector ETFs.
 WATCHLIST: list[str] = [
     # Semiconductors
     "NVDA", "AMD", "TSM", "AVGO", "QCOM", "MU", "AMAT", "KLAC", "LRCX", "ASML",
     "MRVL", "TXN", "ADI", "ON", "SWKS",
-    # AI infrastructure / hyperscalers
-    "MSFT", "GOOG", "META", "AMZN", "ORCL",
-    # High-growth tech
+    # Big tech & cloud
+    "MSFT", "GOOG", "META", "AMZN", "ORCL", "AAPL", "CRM", "NOW", "ADBE",
+    # High-growth SaaS / fintech
     "PLTR", "CRWD", "APP", "NET", "DDOG", "ZS", "COIN", "TTD", "MNDY", "SNOW",
-    # EV / future tech
-    "TSLA", "RIVN",
-    # Growth ETFs
-    "SMH", "SOXX", "QQQ", "ARKK", "XLK", "SOXQ", "IGV",
+    "AXON", "HIMS",
+    # EV / mobility
+    "TSLA",
+    # Financials — wide-moat, capital-light
+    "JPM", "V", "MA", "AXP", "GS", "BLK", "SCHW", "SPGI",
+    # Healthcare — pharma + med devices
+    "LLY", "NVO", "ABBV", "UNH", "ISRG", "TMO", "DXCM", "VEEV", "MRNA",
+    # Consumer — durable brands
+    "COST", "HD", "NKE", "SBUX", "BKNG",
+    # Energy — quality operators
+    "XOM", "CVX", "COP",
+    # Industrials / defence
+    "CAT", "DE", "RTX", "LMT", "GE",
+    # Broad market & sector ETFs
+    "SPY", "QQQ", "SMH", "SOXX", "XLK", "XLV", "XLF", "XLE", "XLI", "IGV",
 ]
 
 _RECOMMENDATION_SCORE: dict[str, float] = {
@@ -46,6 +58,9 @@ class ScreenedCandidate:
     analyst_target: float | None
     upside_pct: float | None
     recommendation: str | None
+    fcf_yield: float | None        # free cash flow yield — Morningstar quality signal
+    return_on_equity: float | None  # ROE — wide-moat quality signal
+    peg_ratio: float | None        # growth-adjusted valuation
     score: float
     summary: str = field(default="")  # one-line formatted for Claude prompt
 
@@ -63,10 +78,16 @@ def _compute_score(
     revenue_growth: float | None,
     forward_pe: float | None,
     recommendation: str | None,
+    fcf_yield: float | None = None,
+    return_on_equity: float | None = None,
 ) -> float:
-    """Weighted composite score — all sub-signals normalized to [0, 1]."""
+    """Weighted composite score — all sub-signals normalized to [0, 1].
 
-    # Momentum: 1-month price change clipped to [-30%, +60%] → mapped to [0, 1]
+    Signals mirror Morningstar's quality screen:
+      momentum + analyst upside + revenue growth + valuation (fwdPE) +
+      FCF yield (cash generation quality) + ROE (moat proxy) + analyst rec.
+    """
+    # Momentum: 1-month price change clipped to [-30%, +60%] → [0, 1]
     momentum = min(max((change_1m + 30) / 90, 0.0), 1.0)
 
     # Analyst upside: clipped to [0%, 60%] → [0, 1]
@@ -75,22 +96,36 @@ def _compute_score(
     # Revenue growth: clipped to [0%, 80%] → [0, 1]
     growth_norm = min(max((revenue_growth or 0) * 100 / 80, 0.0), 1.0)
 
-    # Valuation: lower forward P/E is better; fwdPE of 15 → 1.0, 60 → 0.0
+    # Valuation: lower forward P/E is better; fwdPE 15 → 1.0, 60 → 0.0
     if forward_pe and forward_pe > 0:
         valuation = min(max(1 - (forward_pe - 15) / 45, 0.0), 1.0)
     else:
         valuation = 0.3  # neutral if no data
+
+    # FCF yield: higher is better; 8%+ → 1.0, 0% → 0.0 (Morningstar quality gate)
+    if fcf_yield and fcf_yield > 0:
+        fcf_norm = min(fcf_yield / 0.08, 1.0)
+    else:
+        fcf_norm = 0.3  # neutral if no data
+
+    # ROE: proxy for economic moat; 30%+ → 1.0, 0% → 0.0
+    if return_on_equity and return_on_equity > 0:
+        roe_norm = min(return_on_equity / 0.30, 1.0)
+    else:
+        roe_norm = 0.3  # neutral if no data
 
     # Analyst recommendation
     rec_key = (recommendation or "").lower().replace(" ", "")
     rec_norm = _RECOMMENDATION_SCORE.get(rec_key, 0.3)
 
     return round(
-        0.30 * momentum
-        + 0.20 * upside_norm
-        + 0.20 * growth_norm
+        0.25 * momentum
+        + 0.15 * upside_norm
+        + 0.15 * growth_norm
         + 0.15 * valuation
-        + 0.15 * rec_norm,
+        + 0.15 * fcf_norm
+        + 0.10 * roe_norm
+        + 0.05 * rec_norm,
         4,
     )
 
@@ -148,8 +183,15 @@ def screen_candidates(
         fwd_pe = info.get("forwardPE")
         rev_growth = info.get("revenueGrowth")
         rec = info.get("recommendationKey")
+        peg = info.get("pegRatio")
 
-        score = _compute_score(change_1m, upside, rev_growth, fwd_pe, rec)
+        # Morningstar-style quality signals
+        market_cap = float(info.get("marketCap") or 0)
+        free_cashflow = float(info.get("freeCashflow") or 0)
+        fcf_yield = (free_cashflow / market_cap) if (market_cap > 0 and free_cashflow > 0) else None
+        roe = info.get("returnOnEquity")
+
+        score = _compute_score(change_1m, upside, rev_growth, fwd_pe, rec, fcf_yield, roe)
 
         # Build one-line summary for Claude prompt
         parts = [f"{sym} | ${last:.2f}"]
@@ -158,8 +200,14 @@ def screen_candidates(
             parts.append(f"52wk pos: {pct_from_low}%")
         if fwd_pe:
             parts.append(f"fwdPE: {fwd_pe:.1f}")
+        if peg and peg > 0:
+            parts.append(f"PEG: {peg:.2f}")
         if rev_growth:
             parts.append(f"rev_growth: {rev_growth * 100:.0f}%")
+        if fcf_yield is not None:
+            parts.append(f"FCF_yield: {fcf_yield * 100:.1f}%")
+        if roe is not None:
+            parts.append(f"ROE: {roe * 100:.0f}%")
         if upside is not None:
             parts.append(f"target: ${target:.0f} ({upside:+.0f}%)")
         if rec:
@@ -175,6 +223,9 @@ def screen_candidates(
             analyst_target=target,
             upside_pct=upside,
             recommendation=rec,
+            fcf_yield=fcf_yield,
+            return_on_equity=roe,
+            peg_ratio=peg,
             score=score,
             summary=" | ".join(parts),
         ))

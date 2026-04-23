@@ -54,16 +54,39 @@ class Settings(BaseSettings):
     # Comma-separated list of tickers to scan for buy ideas.
     # Change this to any stocks that fit your investment style.
     buy_scan_watchlist: str = (
+        # Semiconductors & hardware
         "NVDA,AMD,TSM,AVGO,QCOM,MU,AMAT,KLAC,LRCX,ASML,MRVL,TXN,ADI,ON,SWKS,"
-        "MSFT,GOOG,META,AMZN,ORCL,"
-        "PLTR,CRWD,APP,NET,DDOG,ZS,COIN,TTD,MNDY,SNOW,"
-        "TSLA,RIVN,"
-        "SMH,SOXX,QQQ,ARKK,XLK,SOXQ,IGV"
+        # Big tech & cloud
+        "MSFT,GOOG,META,AMZN,ORCL,AAPL,CRM,NOW,ADBE,"
+        # High-growth SaaS / fintech
+        "PLTR,CRWD,APP,NET,DDOG,ZS,COIN,TTD,MNDY,SNOW,AXON,HIMS,"
+        # EV / mobility
+        "TSLA,"
+        # Financials — wide-moat, capital-light
+        "JPM,V,MA,AXP,GS,BLK,SCHW,SPGI,"
+        # Healthcare — pharma + med devices (Morningstar wide-moat names)
+        "LLY,NVO,ABBV,UNH,ISRG,TMO,DXCM,VEEV,MRNA,"
+        # Consumer — durable brands
+        "COST,HD,NKE,SBUX,BKNG,"
+        # Energy — quality operators
+        "XOM,CVX,COP,"
+        # Industrials / defence
+        "CAT,DE,RTX,LMT,GE,"
+        # Broad market & sector ETFs
+        "SPY,QQQ,SMH,SOXX,XLK,XLV,XLF,XLE,XLI,IGV"
     )
     # Minimum analyst upside % a proposal must have to trigger an email notification.
     # Proposals below this threshold still save to .alerts.json — they just don't email you.
     # Set to 0 to receive emails for every scan result.
     email_min_upside_pct: float = 15.0
+
+    # Operator authentication
+    # dashboard_password: shown on the /login page — protects the browser UI.
+    # operator_api_key: used only by server-to-server scripts (schwab_server.sh).
+    # Both should be set in Railway env vars.  If either is unset the app fails
+    # closed (503) so it never accidentally runs open.
+    dashboard_password: str = ""
+    operator_api_key: str = ""
 
     # Live execution guardrails
     live_order_kill_switch: bool = False
