@@ -3137,6 +3137,28 @@ def _live_dashboard_html() -> str:
       const equityTotal = positions.filter(p => p.costBasis > 0).reduce((s,p) => s+p.mktVal, 0);
       positions.forEach(p => { p.weight = equityTotal > 0 ? p.mktVal / equityTotal * 100 : 0; });
 
+      // Override dayPnl using quotes API — currentDayProfitLoss from positions is unreliable
+      // (Schwab sometimes returns total unrealized P&L instead of today's change)
+      try {
+        const syms = positions.filter(p => p.symbol !== '?').map(p => p.symbol).join(',');
+        if (syms) {
+          const qr = await apiFetch('/api/v1/schwab/quotes?symbols=' + encodeURIComponent(syms));
+          if (qr.ok) {
+            const qdata = await qr.json();
+            positions.forEach(p => {
+              const q = qdata[p.symbol]?.quote;
+              if (!q) return;
+              const netChg = q.netChange ?? q.regularMarketNetChange;
+              if (netChg != null) {
+                p.dayPnl = netChg * Math.abs(p.qty);
+                const netPct = q.netPercentChangeInDouble;
+                p.dayPct = netPct != null ? netPct : p.dayPct;
+              }
+            });
+          }
+        }
+      } catch (_) { /* keep positions dayPnl as-is on quote fetch failure */ }
+
       const totalMkt = positions.reduce((s,p)=>s+p.mktVal, 0);
       const totalCost = positions.reduce((s,p)=>s+p.costBasis, 0);
       const totalPnl = totalMkt - totalCost;
