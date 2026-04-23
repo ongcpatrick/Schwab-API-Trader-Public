@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
@@ -12,8 +13,8 @@ from schwab_trader.broker.service import SchwabBrokerService
 
 logger = logging.getLogger(__name__)
 
-# Diversified universe across sectors — semis, tech, financials, healthcare,
-# consumer, energy, industrials, and sector ETFs.
+# Curated seed list — high-conviction names the screener always considers,
+# including growth stocks not yet in the S&P 500 (HIMS, AXON, COIN, etc.).
 WATCHLIST: list[str] = [
     # Semiconductors
     "NVDA", "AMD", "TSM", "AVGO", "QCOM", "MU", "AMAT", "KLAC", "LRCX", "ASML",
@@ -39,6 +40,42 @@ WATCHLIST: list[str] = [
     "SPY", "QQQ", "SMH", "SOXX", "XLK", "XLV", "XLF", "XLE", "XLI", "IGV",
 ]
 
+# S&P 500 cache — refreshed at most once per hour
+_sp500_cache: list[str] = []
+_sp500_fetched_at: float = 0.0
+_SP500_TTL = 3600.0
+
+
+def _fetch_sp500_symbols() -> list[str]:
+    """Return current S&P 500 tickers from Wikipedia, cached for 1 hour."""
+    global _sp500_cache, _sp500_fetched_at
+    if _sp500_cache and time.monotonic() - _sp500_fetched_at < _SP500_TTL:
+        return _sp500_cache
+    try:
+        import io
+        import ssl
+        import urllib.request
+
+        import pandas as pd
+
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+            html = resp.read().decode("utf-8")
+        table = pd.read_html(io.StringIO(html), attrs={"id": "constituents"})[0]
+        syms = table["Symbol"].str.replace(".", "-", regex=False).tolist()
+        _sp500_cache = syms
+        _sp500_fetched_at = time.monotonic()
+        logger.info("_fetch_sp500_symbols: loaded %d S&P 500 symbols", len(syms))
+        return syms
+    except Exception as exc:
+        logger.warning("_fetch_sp500_symbols failed, using cache/watchlist: %s", exc)
+        return _sp500_cache
+
+
 _RECOMMENDATION_SCORE: dict[str, float] = {
     "strongbuy": 1.0,
     "buy": 0.75,
@@ -58,9 +95,9 @@ class ScreenedCandidate:
     analyst_target: float | None
     upside_pct: float | None
     recommendation: str | None
-    fcf_yield: float | None        # free cash flow yield — Morningstar quality signal
+    fcf_yield: float | None         # free cash flow yield — Morningstar quality signal
     return_on_equity: float | None  # ROE — wide-moat quality signal
-    peg_ratio: float | None        # growth-adjusted valuation
+    peg_ratio: float | None         # growth-adjusted valuation
     score: float
     summary: str = field(default="")  # one-line formatted for Claude prompt
 
@@ -87,7 +124,7 @@ def _compute_score(
       momentum + analyst upside + revenue growth + valuation (fwdPE) +
       FCF yield (cash generation quality) + ROE (moat proxy) + analyst rec.
     """
-    # Momentum: 1-month price change clipped to [-30%, +60%] → [0, 1]
+    # Momentum: 1-day price change clipped to [-30%, +60%] → [0, 1]
     momentum = min(max((change_1m + 30) / 90, 0.0), 1.0)
 
     # Analyst upside: clipped to [0%, 60%] → [0, 1]
@@ -137,46 +174,86 @@ def screen_candidates(
     top_n: int = 15,
     watchlist: list[str] | None = None,
 ) -> list[ScreenedCandidate]:
-    """
-    Screen the watchlist for buy candidates.
+    """Screen a broad universe for buy candidates.
 
-    1. Remove excluded symbols (already held or pending BUY proposal).
-    2. Batch-fetch Schwab quotes for remaining symbols.
-    3. Parallel-fetch yfinance info for fundamentals.
-    4. Score each candidate; return top_n sorted descending.
+    Pipeline:
+    1. Build universe = curated watchlist + full S&P 500 (deduplicated).
+    2. Remove excluded symbols (already held or pending proposal).
+    3. Batch-fetch Schwab quotes — one API call for the whole universe.
+    4. Pre-filter: keep only stocks with a valid price and sort by momentum.
+       Take the top `top_n * 4` movers for deep fundamental analysis.
+       This avoids calling yfinance for 500+ tickers every scan.
+    5. Parallel-fetch yfinance fundamentals for the momentum shortlist.
+    6. Score each candidate; return top_n sorted descending.
     """
-    universe = watchlist if watchlist else WATCHLIST
+    # --- Build universe: seed watchlist + S&P 500 ---
+    seed = watchlist if watchlist else WATCHLIST
+    sp500 = _fetch_sp500_symbols()
+    # Preserve seed order, then append any S&P 500 names not already in seed
+    seen: set[str] = set(seed)
+    universe = list(seed)
+    for sym in sp500:
+        if sym not in seen:
+            seen.add(sym)
+            universe.append(sym)
+
     candidates = [s for s in universe if s not in excluded_symbols]
     if not candidates:
         return []
 
-    # --- Schwab quotes (single API call) ---
-    quotes: dict = {}
-    try:
-        quotes = broker_service.get_quotes(candidates) or {}
-    except Exception as exc:
-        logger.warning("screen_candidates: get_quotes failed: %s", exc)
+    logger.info("screen_candidates: universe=%d after exclusions", len(candidates))
 
-    # --- yfinance info (parallel) ---
+    # --- Schwab batch quotes (single API call) ---
+    # Schwab accepts up to 500 symbols per request; chunk if needed.
+    quotes: dict = {}
+    chunk_size = 400
+    for i in range(0, len(candidates), chunk_size):
+        chunk = candidates[i: i + chunk_size]
+        try:
+            chunk_quotes = broker_service.get_quotes(chunk) or {}
+            quotes.update(chunk_quotes)
+        except Exception as exc:
+            logger.warning("screen_candidates: get_quotes chunk failed: %s", exc)
+
+    # --- Momentum pre-filter ---
+    # Sort all symbols with a valid last price by 1-day momentum descending.
+    # Keep top `top_n * 4` for deep yfinance analysis to bound scan time.
+    priced: list[tuple[str, float, float]] = []  # (sym, last, change_1d)
+    for sym in candidates:
+        q = quotes.get(sym, {}).get("quote", {})
+        last = float(q.get("lastPrice") or q.get("mark") or 0)
+        if last <= 0:
+            continue
+        change_1d = float(q.get("netPercentChangeInDouble") or 0)
+        priced.append((sym, last, change_1d))
+
+    # Sort by absolute momentum (capture both strong up and down-reversal candidates)
+    priced.sort(key=lambda x: x[2], reverse=True)
+    deep_list = priced[: top_n * 4]
+
+    logger.info(
+        "screen_candidates: %d priced symbols → deep analysis on top %d by momentum",
+        len(priced),
+        len(deep_list),
+    )
+
+    # --- yfinance fundamentals (parallel, bounded set) ---
+    deep_syms = [sym for sym, _, _ in deep_list]
     yf_info: dict[str, dict] = {}
-    with ThreadPoolExecutor(max_workers=10) as pool:
-        futures = {pool.submit(_fetch_yf_info, s): s for s in candidates}
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        futures = {pool.submit(_fetch_yf_info, s): s for s in deep_syms}
         for fut in as_completed(futures):
             sym, info = fut.result()
             yf_info[sym] = info
 
+    # --- Score and build candidates ---
     screened: list[ScreenedCandidate] = []
-    for sym in candidates:
+    for sym, last, change_1d in deep_list:
         q = quotes.get(sym, {}).get("quote", {})
         info = yf_info.get(sym, {})
 
-        last = float(q.get("lastPrice") or q.get("mark") or 0)
-        if last <= 0:
-            continue
-
         w52_low = float(q.get("52WkLow") or 0)
         w52_high = float(q.get("52WkHigh") or last)
-        change_1m = float(q.get("netPercentChangeInDouble") or 0)  # approximation
 
         target = info.get("targetMeanPrice")
         upside = round((target / last - 1) * 100, 1) if (target and last) else None
@@ -185,19 +262,23 @@ def screen_candidates(
         rec = info.get("recommendationKey")
         peg = info.get("pegRatio")
 
-        # Morningstar-style quality signals
         market_cap = float(info.get("marketCap") or 0)
         free_cashflow = float(info.get("freeCashflow") or 0)
         fcf_yield = (free_cashflow / market_cap) if (market_cap > 0 and free_cashflow > 0) else None
         roe = info.get("returnOnEquity")
 
-        score = _compute_score(change_1m, upside, rev_growth, fwd_pe, rec, fcf_yield, roe)
+        # Skip micro-caps (< $2B market cap) — too illiquid for our order sizes
+        if market_cap and market_cap < 2_000_000_000:
+            continue
 
-        # Build one-line summary for Claude prompt
+        score = _compute_score(change_1d, upside, rev_growth, fwd_pe, rec, fcf_yield, roe)
+
         parts = [f"{sym} | ${last:.2f}"]
-        if w52_low and w52_high:
-            pct_from_low = round((last - w52_low) / (w52_high - w52_low) * 100) if w52_high != w52_low else 0
+        if w52_low and w52_high and w52_high != w52_low:
+            pct_from_low = round((last - w52_low) / (w52_high - w52_low) * 100)
             parts.append(f"52wk pos: {pct_from_low}%")
+        if market_cap:
+            parts.append(f"mktcap: ${market_cap/1e9:.0f}B")
         if fwd_pe:
             parts.append(f"fwdPE: {fwd_pe:.1f}")
         if peg and peg > 0:
@@ -217,7 +298,7 @@ def screen_candidates(
         screened.append(ScreenedCandidate(
             symbol=sym,
             current_price=last,
-            change_1m_pct=change_1m,
+            change_1m_pct=change_1d,
             forward_pe=fwd_pe,
             revenue_growth=rev_growth,
             analyst_target=target,
@@ -231,4 +312,5 @@ def screen_candidates(
         ))
 
     screened.sort(key=lambda c: c.score, reverse=True)
+    logger.info("screen_candidates: returning top %d of %d scored", top_n, len(screened))
     return screened[:top_n]
