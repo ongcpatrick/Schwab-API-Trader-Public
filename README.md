@@ -24,7 +24,7 @@ This watches so I don't have to. It reads news on my positions, checks exit thre
 
 ## How a trade gets proposed
 
-The buy scan runs on a schedule. Claude pulls live portfolio data, reads fundamentals from EDGAR and yfinance, pulls recent news, and runs through the watchlist. If something meets the buy criteria it generates a proposal and sends it to me as an HTML email with a green **Approve** button and a red **Deny** button.
+The buy scan runs on a schedule. Claude pulls live portfolio data, reads fundamentals from EDGAR and yfinance, pulls recent news, and searches the full S&P 500 for candidates — not just a fixed watchlist. Every scan fetches all 503 S&P 500 constituents from Wikipedia, merges them with a curated seed list of high-growth names not yet in the index (PLTR, CRWD, AXON, HIMS, COIN, etc.), scores them by momentum, then runs Morningstar-style quality filters — FCF yield, return on equity, PEG ratio, revenue growth, and analyst upside — on the top movers. The top 15 scorers go to Claude for a 7-step deep research pass. If something meets the buy criteria it generates a proposal and sends it to me as an HTML email with a green **Approve** button and a red **Deny** button.
 
 ![Email Approval](docs/email-approval.png)
 
@@ -114,7 +114,9 @@ See [`routines/README.md`](routines/README.md) for the full Railway and Claude C
 - **Backend:** Python 3.13, FastAPI, Uvicorn
 - **AI:** Anthropic Claude (claude-sonnet-4-6) with a multi-round tool-calling agent loop
 - **Brokerage:** Charles Schwab Individual Trader API (OAuth 2.0, PKCE)
-- **Market data:** yfinance, FRED API, SEC EDGAR
+- **Market data:** yfinance (fundamentals, FCF yield, ROE, PEG), FRED API, SEC EDGAR
+- **Stock discovery:** Full S&P 500 universe fetched dynamically from Wikipedia + curated growth seed list
+- **Screening:** Momentum pre-filter → Morningstar-style quality scoring (FCF yield, ROE, PEG, revenue growth, analyst upside)
 - **Notifications:** Twilio SMS and SMTP email with HTML approve/deny buttons
 - **Frontend:** Vanilla JS, Chart.js, no framework, no build step
 - **Deployment:** Railway for the server, Claude Code for the scheduled routines
@@ -140,7 +142,7 @@ schwab_trader/
 ├── notifications/  # Twilio SMS and SMTP email with approval tokens
 ├── performance/    # Equity curve from full order history
 ├── risk/           # Position risk models and policy engine
-├── screening/      # Watchlist scoring
+├── screening/      # Dynamic S&P 500 universe + Morningstar-style quality scoring
 ├── thesis/         # AI thesis validation per position
 └── server/         # FastAPI app and single-file dashboard HTML
 ```
