@@ -3521,6 +3521,77 @@ _DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
     $('statOverlay').classList.remove('open');
   }
 
+  async function openStockDetail(symbol) {
+    $('statTitle').textContent = symbol;
+    $('statBody').innerHTML = '<div style="padding:32px;text-align:center;color:var(--muted);font-size:13px">Loading…</div>';
+    $('statOverlay').classList.add('open');
+
+    const pos = (positions || []).find(p => p.symbol === symbol);
+    let quote = null;
+    try {
+      const r = await apiFetch('/api/v1/schwab/quotes?symbols=' + encodeURIComponent(symbol));
+      if (r.ok) { const d = await r.json(); quote = d[symbol]?.quote; }
+    } catch (_) {}
+
+    const price     = quote?.lastPrice || quote?.mark || (pos ? pos.mktVal / Math.abs(pos.qty) : 0);
+    const change    = quote?.netChange ?? 0;
+    const changePct = quote?.netPercentChangeInDouble ?? 0;
+    const w52lo     = quote?.['52WkLow'] || 0;
+    const w52hi     = quote?.['52WkHigh'] || 0;
+    const pct52     = (w52hi > w52lo && price) ? Math.round((price - w52lo) / (w52hi - w52lo) * 100) : null;
+    const upColor   = change >= 0 ? '#3fb950' : '#f85149';
+    const chgSign   = change >= 0 ? '+' : '';
+
+    let html = '<div style="text-align:center;padding:4px 0 18px">'
+      + '<div style="font-size:30px;font-weight:700;color:var(--ink);letter-spacing:-.5px">'
+      + (price ? '$' + price.toFixed(2) : '—') + '</div>'
+      + '<div style="font-size:13px;color:' + upColor + ';margin-top:5px">'
+      + chgSign + '$' + Math.abs(change).toFixed(2) + '  (' + chgSign + Math.abs(changePct).toFixed(2) + '%) today</div>'
+      + '</div>';
+
+    if (w52lo && w52hi) {
+      const p52 = pct52 !== null ? pct52 : 0;
+      html += '<div style="margin:0 0 16px">'
+        + '<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--dim);margin-bottom:5px">'
+        + '<span>52-wk $' + w52lo.toFixed(2) + '</span>'
+        + (pct52 !== null ? '<span style="color:var(--ink);font-weight:600">' + pct52 + '% from low</span>' : '')
+        + '<span>$' + w52hi.toFixed(2) + '</span></div>'
+        + '<div style="position:relative;height:5px;background:var(--line);border-radius:3px">'
+        + '<div style="position:absolute;left:0;height:100%;width:' + p52 + '%;background:var(--accent);border-radius:3px;min-width:2px"></div>'
+        + '<div style="position:absolute;left:' + p52 + '%;top:-4px;width:3px;height:13px;background:#fff;border-radius:2px;transform:translateX(-50%)"></div>'
+        + '</div></div>';
+    }
+
+    if (pos) {
+      html += '<div class="stat-section">YOUR POSITION</div>'
+        + '<div class="stat-row"><span>Shares</span><span>' + pos.qty + '</span></div>'
+        + '<div class="stat-row"><span>Avg Cost</span><span>$' + pos.avgCost.toFixed(2) + '</span></div>'
+        + '<div class="stat-row"><span>Market Value</span><span>' + usd(pos.mktVal) + '</span></div>'
+        + '<div class="stat-row"><span>Total P&L</span><span style="color:' + (pos.totalPnl >= 0 ? '#3fb950' : '#f85149') + '">'
+        + (pos.totalPnl >= 0 ? '+' : '') + usd(pos.totalPnl) + ' (' + (pos.totalPct >= 0 ? '+' : '') + pos.totalPct.toFixed(1) + '%)</span></div>'
+        + '<div class="stat-row"><span>Today\'s P&L</span><span style="color:' + (pos.dayPnl >= 0 ? '#3fb950' : '#f85149') + '">'
+        + (pos.dayPnl >= 0 ? '+' : '') + usd(pos.dayPnl) + ' (' + (pos.dayPct >= 0 ? '+' : '') + (pos.dayPct || 0).toFixed(2) + '%)</span></div>'
+        + '<div class="stat-row"><span>Portfolio Weight</span><span>' + pos.weight.toFixed(1) + '% of portfolio</span></div>';
+    }
+
+    html += '<div style="margin-top:18px"><button class="btn-sm" style="width:100%" onclick="askClaudeAbout(\'' + symbol + '\')">'
+      + 'Ask Claude about ' + symbol + ' →</button></div>';
+
+    $('statBody').innerHTML = html;
+  }
+
+  function askClaudeAbout(symbol) {
+    closeStatModal();
+    showPage('advisor');
+    setTimeout(() => {
+      const inp = document.getElementById('chatInput');
+      if (!inp) return;
+      inp.value = 'Tell me about ' + symbol + ' — current thesis, key risks, and whether I should hold, add, or trim my position.';
+      inp.dispatchEvent(new Event('input'));
+      if (typeof chatStreaming !== 'undefined' && !chatStreaming) sendMessage();
+    }, 200);
+  }
+
   function openStatModal(type) {
     if (!positions || !positions.length) return;
     const overlay = $('statOverlay');
@@ -5873,8 +5944,8 @@ _DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
         position:absolute;left:${x+gap}px;top:${y+gap}px;width:${Math.max(w-gap*2,1)}px;height:${Math.max(h-gap*2,1)}px;
         background:${bg};border:1px solid ${border};border-radius:4px;overflow:hidden;
         display:flex;flex-direction:column;justify-content:center;align-items:center;
-        cursor:default;transition:filter .15s;
-      " onmouseover="this.style.filter='brightness(1.3)'" onmouseout="this.style.filter=''">
+        cursor:pointer;transition:filter .15s;
+      " onclick="openStockDetail('${n.symbol}')" onmouseover="this.style.filter='brightness(1.3)'" onmouseout="this.style.filter=''">
         ${showLabel ? `<div style="font-size:${Math.min(Math.floor(Math.min(w,h)/3.5),13)}px;font-weight:700;color:#e6edf3;line-height:1.1">${n.symbol}</div>` : ''}
         ${showSub   ? `<div style="font-size:${Math.min(Math.floor(Math.min(w,h)/5.5),10)}px;color:${n.totalPct>=0?'#3fb950':'#f85149'}">${sign}${n.totalPct.toFixed(1)}%</div>` : ''}
       </div>`;
@@ -5907,6 +5978,12 @@ _DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
       },
       options: {
         responsive: true, maintainAspectRatio: false,
+        onClick(event, elements, chart) {
+          if (!elements.length) return;
+          const sym = chart.data.datasets[elements[0].datasetIndex]?.label;
+          if (sym) openStockDetail(sym);
+        },
+        onHover(event, elements) { if (event.native) event.native.target.style.cursor = elements.length ? 'pointer' : 'default'; },
         plugins: {
           legend: { display: false },
           tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.x.toFixed(1)}% weight, ${ctx.parsed.y.toFixed(1)}% return` } },
@@ -5942,6 +6019,12 @@ _DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
       },
       options: {
         responsive: true, maintainAspectRatio: false,
+        onClick(event, elements, chart) {
+          if (!elements.length) return;
+          const label = chart.data.labels[elements[0].index];
+          if (label && label !== 'TOTAL') openStockDetail(label);
+        },
+        onHover(event, elements) { if (event.native) event.native.target.style.cursor = elements.length ? 'pointer' : 'default'; },
         plugins: {
           legend: { display: false },
           tooltip: { callbacks: { label: ctx => {
@@ -5983,6 +6066,12 @@ _DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
       },
       options: {
         responsive: true, maintainAspectRatio: false,
+        onClick(event, elements, chart) {
+          if (!elements.length) return;
+          const sym = chart.data.labels[elements[0].index];
+          if (sym) openStockDetail(sym);
+        },
+        onHover(event, elements) { if (event.native) event.native.target.style.cursor = elements.length ? 'pointer' : 'default'; },
         plugins: {
           legend: { display: true, position: 'top', labels: { color: '#7d8590', font: { size: 10 }, boxWidth: 10, padding: 10 } },
           tooltip: { callbacks: { label: ctx => ' ' + ctx.dataset.label + ': ' + (ctx.raw >= 0 ? '+' : '') + usd(ctx.raw) } },
@@ -6009,6 +6098,12 @@ _DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
       },
       options: {
         responsive: true, maintainAspectRatio: false,
+        onClick(event, elements, chart) {
+          if (!elements.length) return;
+          const sym = chart.data.datasets[0].data[elements[0].index]?.sym;
+          if (sym) openStockDetail(sym);
+        },
+        onHover(event, elements) { if (event.native) event.native.target.style.cursor = elements.length ? 'pointer' : 'default'; },
         plugins: {
           legend: { display: false },
           tooltip: { callbacks: { label: ctx => `${ctx.raw.sym}: ${ctx.parsed.x.toFixed(1)}% of portfolio, ${ctx.parsed.y.toFixed(1)}% return` } },
