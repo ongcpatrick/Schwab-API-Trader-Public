@@ -5790,14 +5790,69 @@ _DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
     if (!wrap) return;
     const equity = posArr.filter(p => p.mktVal > 0);
     if (!equity.length) { wrap.innerHTML = ''; return; }
-    const total = equity.reduce((s, p) => s + p.mktVal, 0);
 
-    // Squarified treemap via simple row-based layout
-    const sorted = [...equity].sort((a, b) => b.mktVal - a.mktVal);
-    const W = wrap.offsetWidth || 600;
+    const W = wrap.offsetWidth || 800;
     const H = wrap.offsetHeight || 220;
+    const totalVal = equity.reduce((s, p) => s + p.mktVal, 0);
 
-    // colour by totalPct: dark red → neutral → bright green
+    // Normalize to pixel areas summing to W*H
+    const nodes = [...equity]
+      .sort((a, b) => b.mktVal - a.mktVal)
+      .map(p => ({ p, area: (p.mktVal / totalVal) * W * H }));
+
+    // Worst aspect ratio for a candidate row given current remaining bounds
+    function worstRatio(row, s, dw, dh) {
+      const side = Math.min(dw, dh);
+      let max = 0;
+      for (const n of row) {
+        // ratio = max(side²*a/s², s²/(side²*a))
+        const r = Math.max(side * side * n.area / (s * s), s * s / (side * side * n.area));
+        if (r > max) max = r;
+      }
+      return max;
+    }
+
+    // Place one strip and return updated bounds
+    function placeStrip(row, s, dx, dy, dw, dh, out) {
+      if (dw >= dh) {
+        // Vertical strip on left: items stacked top-to-bottom
+        const stripW = s / dh;
+        let ey = dy;
+        for (const n of row) {
+          const itemH = n.area / stripW;
+          out.push({ n: n.p, x: dx, y: ey, w: stripW, h: itemH });
+          ey += itemH;
+        }
+        return { dx: dx + stripW, dy, dw: dw - stripW, dh };
+      } else {
+        // Horizontal strip at top: items laid left-to-right
+        const stripH = s / dw;
+        let ex = dx;
+        for (const n of row) {
+          const itemW = n.area / stripH;
+          out.push({ n: n.p, x: ex, y: dy, w: itemW, h: stripH });
+          ex += itemW;
+        }
+        return { dx, dy: dy + stripH, dw, dh: dh - stripH };
+      }
+    }
+
+    const rects = [];
+    let row = [], s = 0;
+    let dx = 0, dy = 0, dw = W, dh = H;
+
+    for (const n of nodes) {
+      const testRow = [...row, n];
+      const testS = s + n.area;
+      if (row.length === 0 || worstRatio(testRow, testS, dw, dh) <= worstRatio(row, s, dw, dh)) {
+        row.push(n); s += n.area;
+      } else {
+        ({ dx, dy, dw, dh } = placeStrip(row, s, dx, dy, dw, dh, rects));
+        row = [n]; s = n.area;
+      }
+    }
+    if (row.length) placeStrip(row, s, dx, dy, dw, dh, rects);
+
     function pnlColor(pct) {
       if (pct >= 30) return ['#1a4731', '#3fb950'];
       if (pct >= 15) return ['#1a3d2a', '#2ea043'];
@@ -5808,76 +5863,20 @@ _DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
       return ['#5a0e0e', '#ff7b72'];
     }
 
-    // Build rects via simple row algorithm
-    function layoutRow(items, x, y, w, h) {
-      const rowTotal = items.reduce((s, p) => s + p.mktVal, 0);
-      let cx = x;
-      return items.map(p => {
-        const rw = (p.mktVal / rowTotal) * w;
-        const rect = { x: cx, y, w: rw, h, p };
-        cx += rw;
-        return rect;
-      });
-    }
-
-    let rects = [];
-    let remaining = [...sorted];
-    let rx = 0, ry = 0, rw = W, rh = H;
-
-    while (remaining.length) {
-      const rowItems = [];
-      let rowVal = 0;
-      const targetAspect = rw > rh ? rh : rw;
-      const areaPerPx = total / (W * H);
-
-      for (const p of remaining) {
-        const testItems = [...rowItems, p];
-        const testVal = rowVal + p.mktVal;
-        const rowH = (testVal / total) * (rw > rh ? rh : rw);
-        const worst = Math.max(...testItems.map(t => {
-          const tw = (t.mktVal / testVal) * (rw > rh ? rw : rh);
-          return Math.max(rowH / tw, tw / rowH);
-        }));
-        if (rowItems.length && worst > 2) break;
-        rowItems.push(p);
-        rowVal += p.mktVal;
-      }
-
-      if (rw >= rh) {
-        const colW = (rowVal / total) * rw;
-        rects = rects.concat(layoutRow(rowItems, rx, ry, colW, rh));
-        rx += colW; rw -= colW;
-      } else {
-        const rowH2 = (rowVal / total) * rh;
-        const rowR = layoutRow(rowItems, rx, ry, rw, rowH2);
-        // convert vertical
-        let cy = ry;
-        rects = rects.concat(rowItems.map(p => {
-          const ph = (p.mktVal / rowVal) * rowH2;
-          const rect = { x: rx, y: cy, w: rw, h: ph, p };
-          cy += ph;
-          return rect;
-        }));
-        ry += rowH2; rh -= rowH2;
-      }
-
-      remaining = remaining.slice(rowItems.length);
-    }
-
     const gap = 2;
-    wrap.innerHTML = rects.map(({ x, y, w, h, p }) => {
-      const [bg, border] = pnlColor(p.totalPct);
-      const sign = p.totalPct >= 0 ? '+' : '';
-      const showLabel = w > 40 && h > 28;
-      const showSub = w > 60 && h > 46;
-      return `<div title="${p.symbol}: ${usd(p.mktVal)} | ${sign}${p.totalPct.toFixed(1)}%" style="
+    wrap.innerHTML = rects.map(({ n, x, y, w, h }) => {
+      const [bg, border] = pnlColor(n.totalPct);
+      const sign = n.totalPct >= 0 ? '+' : '';
+      const showLabel = w > 36 && h > 24;
+      const showSub   = w > 50 && h > 40;
+      return `<div title="${n.symbol}: ${usd(n.mktVal)} | ${sign}${n.totalPct.toFixed(1)}%" style="
         position:absolute;left:${x+gap}px;top:${y+gap}px;width:${Math.max(w-gap*2,1)}px;height:${Math.max(h-gap*2,1)}px;
         background:${bg};border:1px solid ${border};border-radius:4px;overflow:hidden;
         display:flex;flex-direction:column;justify-content:center;align-items:center;
         cursor:default;transition:filter .15s;
       " onmouseover="this.style.filter='brightness(1.3)'" onmouseout="this.style.filter=''">
-        ${showLabel ? `<div style="font-size:${Math.min(Math.floor(w/4),13)}px;font-weight:700;color:#e6edf3;line-height:1.1">${p.symbol}</div>` : ''}
-        ${showSub ? `<div style="font-size:${Math.min(Math.floor(w/6),10)}px;color:${p.totalPct>=0?'#3fb950':'#f85149'}">${sign}${p.totalPct.toFixed(1)}%</div>` : ''}
+        ${showLabel ? `<div style="font-size:${Math.min(Math.floor(Math.min(w,h)/3.5),13)}px;font-weight:700;color:#e6edf3;line-height:1.1">${n.symbol}</div>` : ''}
+        ${showSub   ? `<div style="font-size:${Math.min(Math.floor(Math.min(w,h)/5.5),10)}px;color:${n.totalPct>=0?'#3fb950':'#f85149'}">${sign}${n.totalPct.toFixed(1)}%</div>` : ''}
       </div>`;
     }).join('');
   }
