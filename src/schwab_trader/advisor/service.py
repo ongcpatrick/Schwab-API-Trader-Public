@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
-import time
 import random
+import time
 from collections.abc import Generator
 
 import anthropic
@@ -143,14 +143,14 @@ class AdvisorService:
 
     def stream_chat(
         self, message: str, history: list[dict], portfolio_context: str
-    ) -> Generator[str, None, None]:
+    ) -> Generator[str]:
         """Agent loop: execute tool calls until end_turn, yielding streamed text chunks."""
         messages = [*history, {"role": "user", "content": message}]
         yield from self._agent_stream(messages, depth=0)
 
     def _agent_stream(
         self, messages: list[dict], depth: int
-    ) -> Generator[str | dict, None, None]:
+    ) -> Generator[str | dict]:
         if depth >= _MAX_TOOL_ROUNDS:
             logger.warning("AdvisorService: agent stream hit max rounds (%d)", _MAX_TOOL_ROUNDS)
             return
@@ -163,8 +163,7 @@ class AdvisorService:
             messages=messages,
             extra_headers=_BETA_HEADERS,
         ) as stream:
-            for text in stream.text_stream:
-                yield text
+            yield from stream.text_stream
             final = stream.get_final_message()
 
         if final.stop_reason != "tool_use":
@@ -206,13 +205,14 @@ class AdvisorService:
         tools = _CACHED_TOOL_SCHEMAS
 
         for round_num in range(max_rounds):
+            current_messages = messages
             response = self._call_with_retry(
-                lambda: self._client.messages.create(
+                lambda current_messages=current_messages: self._client.messages.create(
                     model=_SCAN_MODEL,
                     max_tokens=4096,
                     system=system,
                     tools=tools,
-                    messages=messages,
+                    messages=current_messages,
                     extra_headers=_BETA_HEADERS,
                 )
             )

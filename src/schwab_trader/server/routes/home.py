@@ -2,13 +2,14 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Cookie, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
+from schwab_trader.auth.browser_session import COOKIE_NAME, is_valid_session
 from schwab_trader.core.settings import get_settings
 from schwab_trader.journal.models import JournalOverview
-from schwab_trader.server.dependencies import get_journal_store, get_token_store
+from schwab_trader.server.dependencies import get_journal_store, get_token_store, require_auth
 
 
 class AppStatusResponse(BaseModel):
@@ -34,16 +35,23 @@ def home() -> RedirectResponse:
 
 
 @router.get("/setup", response_class=HTMLResponse)
-def setup_page() -> HTMLResponse:
+def setup_page(
+    session: Annotated[str | None, Cookie(alias=COOKIE_NAME)] = None,
+) -> HTMLResponse:
     """Serve the Schwab OAuth setup and auth page."""
-
+    if not session or not is_valid_session(session):
+        return RedirectResponse(url="/login", status_code=302)  # type: ignore[return-value]
     return HTMLResponse(_home_html())
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
-def trading_dashboard() -> HTMLResponse:
-    """Serve the live trading dashboard."""
+def trading_dashboard(
+    session: Annotated[str | None, Cookie(alias=COOKIE_NAME)] = None,
+) -> HTMLResponse:
+    """Serve the live trading dashboard — redirect to login if unauthenticated."""
 
+    if not session or not is_valid_session(session):
+        return RedirectResponse(url="/login", status_code=302)  # type: ignore[return-value]
     return HTMLResponse(
         _live_dashboard_html(),
         headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
@@ -51,9 +59,12 @@ def trading_dashboard() -> HTMLResponse:
 
 
 @router.get("/customize", response_class=HTMLResponse)
-def customize_page() -> HTMLResponse:
+def customize_page(
+    session: Annotated[str | None, Cookie(alias=COOKIE_NAME)] = None,
+) -> HTMLResponse:
     """Serve the dashboard customization page."""
-
+    if not session or not is_valid_session(session):
+        return RedirectResponse(url="/login", status_code=302)  # type: ignore[return-value]
     return HTMLResponse(_customize_html())
 
 
@@ -103,7 +114,7 @@ def get_current_settings() -> dict:
     }
 
 
-@router.post("/api/v1/settings")
+@router.post("/api/v1/settings", dependencies=[Depends(require_auth)])
 def update_settings(payload: dict) -> dict:
     """Persist threshold overrides to the .env file and clear the settings cache."""
     from pathlib import Path as _Path
@@ -196,12 +207,19 @@ def app_status(
     ]
     token = token_store.load()
     overview = store.get_overview()
+    # A token on disk is only "authenticated" if the Schwab refresh token
+    # hasn't expired. If refresh_token_created_at is unknown (old token), we
+    # fall back to trusting the file exists.
+    token_usable = False
+    if token is not None:
+        hours = token.refresh_token_hours_remaining()
+        token_usable = hours is None or hours > 0
     return AppStatusResponse(
         oauth_settings_complete=not missing_settings,
         missing_settings=missing_settings,
         callback_url=settings.schwab_callback_url,
         scope=settings.schwab_scope,
-        authenticated=token is not None,
+        authenticated=token_usable,
         access_token_expires_at=token.access_token_expires_at.isoformat() if token else None,
         journal_overview=overview,
     )
@@ -1432,7 +1450,10 @@ def _home_html() -> str:
 
 
 def _live_dashboard_html() -> str:
-    return """<!DOCTYPE html>
+    return _DASHBOARD_HTML_TEMPLATE
+
+
+_DASHBOARD_HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -1544,10 +1565,30 @@ def _live_dashboard_html() -> str:
       border: 1px solid var(--line);
       border-radius: 12px;
       padding: 18px 20px;
+      cursor: pointer;
+      transition: border-color .15s, box-shadow .15s;
     }
+    .card:hover { border-color: rgba(255,255,255,.2); box-shadow: 0 4px 20px rgba(0,0,0,.35); }
     .card-label { font-size: 10px; text-transform: uppercase; letter-spacing: .09em; color: var(--dim); margin-bottom: 6px; font-weight: 600; }
     .card-value { font-size: 26px; font-weight: 700; letter-spacing: -0.04em; line-height: 1.1; }
     .card-sub { font-size: 11.5px; color: var(--muted); margin-top: 5px; }
+    /* ── Stat drill-down modal ── */
+    .stat-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.6); backdrop-filter:blur(4px); z-index:900; align-items:center; justify-content:center; }
+    .stat-overlay.open { display:flex; }
+    .stat-box { background:var(--surface); border:1px solid var(--line); border-radius:16px; width:min(480px,92vw); max-height:80vh; display:flex; flex-direction:column; overflow:hidden; }
+    .stat-box-head { display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid var(--line); }
+    .stat-box-title { font-size:13px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--dim); }
+    .stat-box-close { background:none; border:none; color:var(--muted); font-size:20px; cursor:pointer; line-height:1; padding:0 4px; }
+    .stat-box-close:hover { color:var(--ink); }
+    .stat-box-body { overflow-y:auto; padding:14px 20px 20px; }
+    .stat-row { display:flex; justify-content:space-between; align-items:center; padding:9px 0; border-bottom:1px solid rgba(255,255,255,.04); font-size:13px; }
+    .stat-row:last-child { border-bottom:none; }
+    .stat-row-sym { font-weight:700; color:var(--ink); min-width:60px; }
+    .stat-row-name { color:var(--muted); font-size:11px; flex:1; padding:0 10px; }
+    .stat-row-val { font-weight:600; text-align:right; }
+    .stat-section { font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); font-weight:700; margin:14px 0 6px; }
+    .stat-big { font-size:22px; font-weight:700; letter-spacing:-.03em; margin:4px 0 2px; }
+    .stat-sub { font-size:11px; color:var(--muted); }
     .gain { color: var(--green); }
     .loss { color: var(--red); }
     .panel {
@@ -2444,27 +2485,27 @@ def _live_dashboard_html() -> str:
 
   <!-- SUMMARY STRIP -->
   <div class="summary-strip">
-    <div class="card">
+    <div class="card" onclick="openStatModal('value')">
       <div class="card-label">Portfolio Value</div>
       <div class="card-value" id="cTotal"><span class="skel" style="width:110px;height:26px">&nbsp;</span></div>
       <div class="card-sub" id="cTotalSub">&nbsp;</div>
     </div>
-    <div class="card">
+    <div class="card" onclick="openStatModal('day')">
       <div class="card-label">Today's P&L</div>
       <div class="card-value" id="cDay"><span class="skel" style="width:90px;height:26px">&nbsp;</span></div>
       <div class="card-sub" id="cDaySub">&nbsp;</div>
     </div>
-    <div class="card">
+    <div class="card" onclick="openStatModal('return')">
       <div class="card-label">Total Return</div>
       <div class="card-value" id="cPnl"><span class="skel" style="width:90px;height:26px">&nbsp;</span></div>
       <div class="card-sub" id="cPnlSub">&nbsp;</div>
     </div>
-    <div class="card">
+    <div class="card" onclick="openStatModal('cash')">
       <div class="card-label">Cash Available</div>
       <div class="card-value" id="cCash"><span class="skel" style="width:80px;height:26px">&nbsp;</span></div>
       <div class="card-sub" id="cCashSub">&nbsp;</div>
     </div>
-    <div class="health-card" id="healthCard">
+    <div class="health-card" id="healthCard" style="cursor:pointer" onclick="openStatModal('health')">
       <div class="card-label">Portfolio Health</div>
       <div class="health-ring-wrap">
         <svg class="health-ring" width="48" height="48" viewBox="0 0 48 48">
@@ -2479,6 +2520,17 @@ def _live_dashboard_html() -> str:
           <div class="health-label" id="healthLabel">Loading...</div>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- ── Stat drill-down modal ───────────────────────────────── -->
+  <div class="stat-overlay" id="statOverlay" onclick="if(event.target===this)closeStatModal()">
+    <div class="stat-box">
+      <div class="stat-box-head">
+        <span class="stat-box-title" id="statTitle"></span>
+        <button class="stat-box-close" onclick="closeStatModal()">&#x2715;</button>
+      </div>
+      <div class="stat-box-body" id="statBody"></div>
     </div>
   </div>
 
@@ -2574,21 +2626,54 @@ def _live_dashboard_html() -> str:
           </table>
         </div>
         <div class="panel" id="chartsPanel">
+          <!-- Row 1: Treemap full width -->
+          <div style="border-bottom:1px solid var(--line);">
+            <div class="panel-header" style="border-bottom:none;padding-bottom:4px;">
+              <span class="panel-title">Portfolio Treemap</span>
+              <span class="panel-meta" style="font-size:11px;color:var(--muted)">Size = market value &nbsp;·&nbsp; Color = total return</span>
+            </div>
+            <div style="padding:8px 16px 16px;">
+              <div id="treemapWrap" style="position:relative;width:100%;height:220px;"></div>
+            </div>
+          </div>
+          <!-- Row 2: Bubble + Waterfall -->
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;border-bottom:1px solid var(--line);">
             <div style="border-right:1px solid var(--line);">
               <div class="panel-header" style="border-bottom:none;padding-bottom:4px;">
-                <span class="panel-title">Sector Allocation</span>
+                <span class="panel-title">Weight vs Return</span>
+                <span class="panel-meta" style="font-size:10px;color:var(--muted)">Bubble = value</span>
               </div>
-              <div style="padding:8px 16px 16px;display:flex;justify-content:center;min-height:260px;align-items:center;">
-                <canvas id="sectorChart"></canvas>
+              <div style="padding:8px 16px 16px;position:relative;height:260px;">
+                <canvas id="bubbleChart"></canvas>
               </div>
             </div>
             <div>
               <div class="panel-header" style="border-bottom:none;padding-bottom:4px;">
-                <span class="panel-title">P&amp;L by Position</span>
+                <span class="panel-title">P&amp;L Attribution</span>
+                <span class="panel-meta" style="font-size:10px;color:var(--muted)">Contribution to total return</span>
               </div>
-              <div style="padding:8px 16px 16px;position:relative;height:300px;">
+              <div style="padding:8px 16px 16px;position:relative;height:260px;">
+                <canvas id="waterfallChart"></canvas>
+              </div>
+            </div>
+          </div>
+          <!-- Row 3: Day vs All-time + Concentration scatter -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;">
+            <div style="border-right:1px solid var(--line);">
+              <div class="panel-header" style="border-bottom:none;padding-bottom:4px;">
+                <span class="panel-title">Today vs All-Time P&amp;L</span>
+              </div>
+              <div style="padding:8px 16px 16px;position:relative;height:260px;">
                 <canvas id="pnlChart"></canvas>
+              </div>
+            </div>
+            <div>
+              <div class="panel-header" style="border-bottom:none;padding-bottom:4px;">
+                <span class="panel-title">Concentration Risk</span>
+                <span class="panel-meta" style="font-size:10px;color:var(--muted)">Weight % vs return %</span>
+              </div>
+              <div style="padding:8px 16px 16px;position:relative;height:260px;">
+                <canvas id="scatterChart"></canvas>
               </div>
             </div>
           </div>
@@ -3066,8 +3151,9 @@ def _live_dashboard_html() -> str:
   let perfChartInst = null;
   let activePerfDays = 30;
 
-  // Wrapper that intercepts 401 globally and shows the auth banner
-  async function apiFetch(url, opts) {
+  // Session cookie is sent automatically by the browser on every request.
+  // 401 means the session expired — show the auth banner.
+  async function apiFetch(url, opts = {}) {
     const r = await fetch(url, opts);
     if (r.status === 401) {
       $('authBanner').style.display = '';
@@ -3429,6 +3515,123 @@ def _live_dashboard_html() -> str:
   // ── Agent alerts ──────────────────────────────────────────────
   const SEV_ICON = { HIGH: '!', MEDIUM: '–', LOW: '' };
   const SEV_CLASS = { HIGH: 'flag-high', MEDIUM: 'flag-medium', LOW: 'flag-low' };
+
+  // ── Stat card drill-down modal ────────────────────────────────
+  function closeStatModal() {
+    $('statOverlay').classList.remove('open');
+  }
+
+  function openStatModal(type) {
+    if (!positions || !positions.length) return;
+    const overlay = $('statOverlay');
+    const title = $('statTitle');
+    const body = $('statBody');
+
+    if (type === 'value') {
+      title.textContent = 'Portfolio Breakdown';
+      const sorted = [...positions].filter(p => p.mktVal > 0).sort((a,b) => b.mktVal - a.mktVal);
+      const total = sorted.reduce((s,p) => s + p.mktVal, 0);
+      body.innerHTML = '<div class="stat-section">By Position</div>'
+        + sorted.map(p => {
+          const pct = total > 0 ? (p.mktVal / total * 100).toFixed(1) : '0.0';
+          const bar = `<div style="height:3px;background:var(--accent);border-radius:2px;width:${Math.min(pct,100)}%;margin-top:4px;opacity:.6"></div>`;
+          return `<div class="stat-row">
+            <span class="stat-row-sym">${p.symbol}</span>
+            <span class="stat-row-name">${pct}% of portfolio</span>
+            <span class="stat-row-val">${usd(p.mktVal)}</span>
+          </div>${bar}`;
+        }).join('');
+
+    } else if (type === 'day') {
+      title.textContent = "Today's P&L Breakdown";
+      const sorted = [...positions].sort((a,b) => b.dayPnl - a.dayPnl);
+      const total = positions.reduce((s,p) => s + p.dayPnl, 0);
+      const winners = sorted.filter(p => p.dayPnl > 0);
+      const losers  = sorted.filter(p => p.dayPnl < 0);
+      const flat    = sorted.filter(p => p.dayPnl === 0);
+      const renderGroup = (label, list) => list.length
+        ? `<div class="stat-section">${label}</div>` + list.map(p =>
+            `<div class="stat-row">
+              <span class="stat-row-sym">${p.symbol}</span>
+              <span class="stat-row-name">${p.dayPct >= 0 ? '+' : ''}${p.dayPct.toFixed(2)}%</span>
+              <span class="stat-row-val" style="color:${p.dayPnl>=0?'var(--green)':'var(--red)'}">${p.dayPnl>=0?'+':''}${usd(p.dayPnl)}</span>
+            </div>`).join('')
+        : '';
+      body.innerHTML = `<div style="margin-bottom:14px">
+          <div class="stat-big" style="color:${total>=0?'var(--green)':'var(--red)'}">${total>=0?'+':''}${usd(total)}</div>
+          <div class="stat-sub">Total day P&L across ${positions.length} positions</div>
+        </div>`
+        + renderGroup('Winners', winners)
+        + renderGroup('Losers', losers)
+        + renderGroup('Unchanged', flat);
+
+    } else if (type === 'return') {
+      title.textContent = 'Total Return Breakdown';
+      const sorted = [...positions].sort((a,b) => b.totalPnl - a.totalPnl);
+      const totalPnl = positions.reduce((s,p) => s + p.totalPnl, 0);
+      const totalCost = positions.reduce((s,p) => s + p.costBasis, 0);
+      const totalPct = totalCost > 0 ? (totalPnl / totalCost * 100) : 0;
+      const winners = sorted.filter(p => p.totalPnl > 0);
+      const losers  = sorted.filter(p => p.totalPnl < 0);
+      const renderGroup = (label, list) => list.length
+        ? `<div class="stat-section">${label}</div>` + list.map(p =>
+            `<div class="stat-row">
+              <span class="stat-row-sym">${p.symbol}</span>
+              <span class="stat-row-name">${p.totalPct>=0?'+':''}${p.totalPct.toFixed(1)}%</span>
+              <span class="stat-row-val" style="color:${p.totalPnl>=0?'var(--green)':'var(--red)'}">${p.totalPnl>=0?'+':''}${usd(p.totalPnl)}</span>
+            </div>`).join('')
+        : '';
+      body.innerHTML = `<div style="margin-bottom:14px">
+          <div class="stat-big" style="color:${totalPnl>=0?'var(--green)':'var(--red)'}">${totalPnl>=0?'+':''}${usd(totalPnl)}</div>
+          <div class="stat-sub">${totalPct>=0?'+':''}${totalPct.toFixed(2)}% all-time return on ${usd(totalCost)} invested</div>
+        </div>`
+        + renderGroup('Gainers', winners)
+        + renderGroup('Losers', losers)
+        + `<div style="margin-top:16px;text-align:center">
+            <button class="btn-sm" onclick="closeStatModal();showPage('performance')">View Full Performance Chart</button>
+           </div>`;
+
+    } else if (type === 'cash') {
+      title.textContent = 'Cash & Buying Power';
+      const invested = positions.reduce((s,p) => s + p.mktVal, 0);
+      const cash = parseFloat($('cCash').textContent.replace(/[$,]/g,'')) || 0;
+      const total = invested + cash;
+      const cashPct = total > 0 ? (cash / total * 100).toFixed(1) : '0';
+      body.innerHTML = `
+        <div class="stat-row"><span class="stat-row-sym">Cash</span><span class="stat-row-name">Available to trade</span><span class="stat-row-val">${usd(cash)}</span></div>
+        <div class="stat-row"><span class="stat-row-sym">Invested</span><span class="stat-row-name">Across ${positions.length} positions</span><span class="stat-row-val">${usd(invested)}</span></div>
+        <div class="stat-row"><span class="stat-row-sym">Cash %</span><span class="stat-row-name">Of total portfolio</span><span class="stat-row-val">${cashPct}%</span></div>
+        <div style="margin-top:16px;padding:12px;background:rgba(255,255,255,.03);border-radius:8px;font-size:12px;color:var(--muted)">
+          Cash is held in your Schwab account and earns SPAXX money market rates automatically.
+        </div>`;
+
+    } else if (type === 'health') {
+      title.textContent = 'Portfolio Health Score';
+      const score = parseInt($('healthScore').textContent) || 0;
+      const conc = positions.length > 0 ? Math.max(...positions.map(p => p.weight)).toFixed(1) : 0;
+      const losers = positions.filter(p => p.totalPct < -8).length;
+      const bigGainers = positions.filter(p => p.totalPct > 30).length;
+      const color = score >= 80 ? 'var(--green)' : score >= 60 ? '#fbbf24' : 'var(--red)';
+      body.innerHTML = `
+        <div style="text-align:center;margin-bottom:20px">
+          <div class="stat-big" style="color:${color};font-size:48px">${score}</div>
+          <div class="stat-sub">${$('healthLabel').textContent}</div>
+        </div>
+        <div class="stat-section">Score Factors</div>
+        <div class="stat-row"><span class="stat-row-sym">Positions</span><span class="stat-row-name">Diversification</span><span class="stat-row-val">${positions.length} held</span></div>
+        <div class="stat-row"><span class="stat-row-sym">Concentration</span><span class="stat-row-name">Largest single position</span><span class="stat-row-val">${conc}%</span></div>
+        <div class="stat-row"><span class="stat-row-sym">Losers</span><span class="stat-row-name">Down more than 8%</span><span class="stat-row-val" style="color:${losers>0?'var(--red)':'var(--green)'}">${losers}</span></div>
+        <div class="stat-row"><span class="stat-row-sym">Big gains</span><span class="stat-row-name">Up more than 30%</span><span class="stat-row-val" style="color:var(--green)">${bigGainers}</span></div>
+        <div style="margin-top:16px;padding:12px;background:rgba(255,255,255,.03);border-radius:8px;font-size:12px;color:var(--muted)">
+          Health score reflects concentration risk, drawdown depth, and position balance. 80+ is strong, 60–79 is moderate, below 60 needs attention.
+        </div>`;
+    }
+
+    overlay.classList.add('open');
+  }
+
+  // Close modal on Escape key
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeStatModal(); });
 
   function _esc(s) {
     return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -5576,96 +5779,267 @@ def _live_dashboard_html() -> str:
     '#f78166','#b38ef3','#ffa198','#89dcff',
   ];
 
-  let sectorChartInst = null;
   let pnlChartInst = null;
+  let bubbleChartInst = null;
+  let waterfallChartInst = null;
+  let scatterChartInst = null;
+
+  // ── Treemap (pure CSS — no plugin needed) ────────────────────────
+  function renderTreemap(posArr) {
+    const wrap = $('treemapWrap');
+    if (!wrap) return;
+    const equity = posArr.filter(p => p.mktVal > 0);
+    if (!equity.length) { wrap.innerHTML = ''; return; }
+    const total = equity.reduce((s, p) => s + p.mktVal, 0);
+
+    // Squarified treemap via simple row-based layout
+    const sorted = [...equity].sort((a, b) => b.mktVal - a.mktVal);
+    const W = wrap.offsetWidth || 600;
+    const H = wrap.offsetHeight || 220;
+
+    // colour by totalPct: dark red → neutral → bright green
+    function pnlColor(pct) {
+      if (pct >= 30) return ['#1a4731', '#3fb950'];
+      if (pct >= 15) return ['#1a3d2a', '#2ea043'];
+      if (pct >= 5)  return ['#153225', '#238636'];
+      if (pct >= 0)  return ['#0f2619', '#1a7f37'];
+      if (pct >= -5) return ['#3d1a1a', '#da3633'];
+      if (pct >= -15)return ['#4a1414', '#f85149'];
+      return ['#5a0e0e', '#ff7b72'];
+    }
+
+    // Build rects via simple row algorithm
+    function layoutRow(items, x, y, w, h) {
+      const rowTotal = items.reduce((s, p) => s + p.mktVal, 0);
+      let cx = x;
+      return items.map(p => {
+        const rw = (p.mktVal / rowTotal) * w;
+        const rect = { x: cx, y, w: rw, h, p };
+        cx += rw;
+        return rect;
+      });
+    }
+
+    let rects = [];
+    let remaining = [...sorted];
+    let rx = 0, ry = 0, rw = W, rh = H;
+
+    while (remaining.length) {
+      const rowItems = [];
+      let rowVal = 0;
+      const targetAspect = rw > rh ? rh : rw;
+      const areaPerPx = total / (W * H);
+
+      for (const p of remaining) {
+        const testItems = [...rowItems, p];
+        const testVal = rowVal + p.mktVal;
+        const rowH = (testVal / total) * (rw > rh ? rh : rw);
+        const worst = Math.max(...testItems.map(t => {
+          const tw = (t.mktVal / testVal) * (rw > rh ? rw : rh);
+          return Math.max(rowH / tw, tw / rowH);
+        }));
+        if (rowItems.length && worst > 2) break;
+        rowItems.push(p);
+        rowVal += p.mktVal;
+      }
+
+      if (rw >= rh) {
+        const colW = (rowVal / total) * rw;
+        rects = rects.concat(layoutRow(rowItems, rx, ry, colW, rh));
+        rx += colW; rw -= colW;
+      } else {
+        const rowH2 = (rowVal / total) * rh;
+        const rowR = layoutRow(rowItems, rx, ry, rw, rowH2);
+        // convert vertical
+        let cy = ry;
+        rects = rects.concat(rowItems.map(p => {
+          const ph = (p.mktVal / rowVal) * rowH2;
+          const rect = { x: rx, y: cy, w: rw, h: ph, p };
+          cy += ph;
+          return rect;
+        }));
+        ry += rowH2; rh -= rowH2;
+      }
+
+      remaining = remaining.slice(rowItems.length);
+    }
+
+    const gap = 2;
+    wrap.innerHTML = rects.map(({ x, y, w, h, p }) => {
+      const [bg, border] = pnlColor(p.totalPct);
+      const sign = p.totalPct >= 0 ? '+' : '';
+      const showLabel = w > 40 && h > 28;
+      const showSub = w > 60 && h > 46;
+      return `<div title="${p.symbol}: ${usd(p.mktVal)} | ${sign}${p.totalPct.toFixed(1)}%" style="
+        position:absolute;left:${x+gap}px;top:${y+gap}px;width:${Math.max(w-gap*2,1)}px;height:${Math.max(h-gap*2,1)}px;
+        background:${bg};border:1px solid ${border};border-radius:4px;overflow:hidden;
+        display:flex;flex-direction:column;justify-content:center;align-items:center;
+        cursor:default;transition:filter .15s;
+      " onmouseover="this.style.filter='brightness(1.3)'" onmouseout="this.style.filter=''">
+        ${showLabel ? `<div style="font-size:${Math.min(Math.floor(w/4),13)}px;font-weight:700;color:#e6edf3;line-height:1.1">${p.symbol}</div>` : ''}
+        ${showSub ? `<div style="font-size:${Math.min(Math.floor(w/6),10)}px;color:${p.totalPct>=0?'#3fb950':'#f85149'}">${sign}${p.totalPct.toFixed(1)}%</div>` : ''}
+      </div>`;
+    }).join('');
+  }
 
   async function updateCharts(posArr) {
     if (!posArr || !posArr.length || typeof Chart === 'undefined') return;
     Chart.defaults.color = '#7d8590';
     Chart.defaults.font.family = 'ui-sans-serif, system-ui, -apple-system, sans-serif';
 
-    // ── P&L bar chart ──
-    const byPnl = [...posArr]
-      .filter(p => p.costBasis > 0)
-      .sort((a, b) => b.totalPnl - a.totalPnl);
+    const equity = posArr.filter(p => p.costBasis > 0);
 
-    const pnlCtx = $('pnlChart');
-    if (pnlChartInst) { pnlChartInst.destroy(); pnlChartInst = null; }
-    pnlChartInst = new Chart(pnlCtx, {
-      type: 'bar',
+    // ── 1. Treemap ──────────────────────────────────────────────────
+    renderTreemap(equity);
+
+    // ── 2. Bubble chart: weight % (x) vs total return % (y), size = mktVal ──
+    const maxMkt = Math.max(...equity.map(p => p.mktVal), 1);
+    if (bubbleChartInst) { bubbleChartInst.destroy(); bubbleChartInst = null; }
+    bubbleChartInst = new Chart($('bubbleChart'), {
+      type: 'bubble',
       data: {
-        labels: byPnl.map(p => p.symbol),
-        datasets: [{
-          data: byPnl.map(p => parseFloat(p.totalPnl.toFixed(2))),
-          backgroundColor: byPnl.map(p => p.totalPnl >= 0 ? 'rgba(63,185,80,0.65)' : 'rgba(248,81,73,0.65)'),
-          borderColor: byPnl.map(p => p.totalPnl >= 0 ? '#3fb950' : '#f85149'),
+        datasets: equity.map(p => ({
+          label: p.symbol,
+          data: [{ x: parseFloat(p.weight.toFixed(2)), y: parseFloat(p.totalPct.toFixed(2)), r: Math.max(Math.sqrt(p.mktVal / maxMkt) * 28, 5) }],
+          backgroundColor: p.totalPct >= 0 ? 'rgba(63,185,80,0.55)' : 'rgba(248,81,73,0.55)',
+          borderColor: p.totalPct >= 0 ? '#3fb950' : '#f85149',
           borderWidth: 1,
-          borderRadius: 3,
-        }],
+        })),
       },
       options: {
-        indexAxis: 'y',
-        responsive: true,
-        maintainAspectRatio: false,
+        responsive: true, maintainAspectRatio: false,
         plugins: {
           legend: { display: false },
-          tooltip: { callbacks: { label: ctx => ' ' + usd(ctx.raw) } },
+          tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.x.toFixed(1)}% weight, ${ctx.parsed.y.toFixed(1)}% return` } },
         },
         scales: {
-          x: {
-            grid: { color: 'rgba(255,255,255,0.07)' },
-            ticks: { color: '#7d8590', font: { size: 10 },
-              callback: v => '$' + (Math.abs(v) >= 1000 ? (v/1000).toFixed(1)+'k' : v) },
-          },
-          y: { grid: { display: false }, ticks: { color: '#e6edf3', font: { size: 11, weight: '700' } } },
+          x: { title: { display: true, text: 'Portfolio Weight %', color: '#7d8590', font: { size: 10 } },
+               grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#7d8590', font: { size: 10 }, callback: v => v + '%' } },
+          y: { title: { display: true, text: 'Total Return %', color: '#7d8590', font: { size: 10 } },
+               grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#7d8590', font: { size: 10 }, callback: v => v + '%' } },
         },
       },
     });
 
-    // ── Sector donut chart ──
-    try {
-      const syms = posArr.map(p => p.symbol).join(',');
-      const r = await fetch('/api/v1/earnings/sectors?symbols=' + encodeURIComponent(syms));
-      if (!r.ok) return;
-      const sectorMap = await r.json();
-
-      const bySector = {};
-      for (const p of posArr) {
-        const sec = sectorMap[p.symbol] || 'Unknown';
-        bySector[sec] = (bySector[sec] || 0) + p.mktVal;
-      }
-
-      const labels = Object.keys(bySector);
-      const values = Object.values(bySector);
-      const total = values.reduce((s, v) => s + v, 0);
-      const colors = labels.map((_, i) => PALETTE[i % PALETTE.length]);
-
-      const sCtx = $('sectorChart');
-      if (sectorChartInst) { sectorChartInst.destroy(); sectorChartInst = null; }
-      sectorChartInst = new Chart(sCtx, {
-        type: 'doughnut',
-        data: {
-          labels,
-          datasets: [{ data: values, backgroundColor: colors, borderColor: '#161b22', borderWidth: 2, hoverOffset: 6 }],
+    // ── 3. Waterfall: P&L attribution (floating bars) ───────────────
+    const byPnlWf = [...equity].sort((a, b) => b.totalPnl - a.totalPnl);
+    let running = 0;
+    const wfData = byPnlWf.map(p => {
+      const start = running;
+      running += p.totalPnl;
+      return { min: Math.min(start, running), max: Math.max(start, running), pnl: p.totalPnl };
+    });
+    if (waterfallChartInst) { waterfallChartInst.destroy(); waterfallChartInst = null; }
+    waterfallChartInst = new Chart($('waterfallChart'), {
+      type: 'bar',
+      data: {
+        labels: [...byPnlWf.map(p => p.symbol), 'TOTAL'],
+        datasets: [{
+          data: [...wfData.map(d => [d.min, d.max]), [0, running]],
+          backgroundColor: [...byPnlWf.map(p => p.totalPnl >= 0 ? 'rgba(63,185,80,0.7)' : 'rgba(248,81,73,0.7)'), running >= 0 ? 'rgba(63,185,80,0.9)' : 'rgba(248,81,73,0.9)'],
+          borderColor: [...byPnlWf.map(p => p.totalPnl >= 0 ? '#3fb950' : '#f85149'), running >= 0 ? '#3fb950' : '#f85149'],
+          borderWidth: 1, borderRadius: 2,
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => {
+            const idx = ctx.dataIndex;
+            const val = idx < byPnlWf.length ? byPnlWf[idx].totalPnl : running;
+            return ' ' + (val >= 0 ? '+' : '') + usd(val);
+          }}},
         },
-        options: {
-          responsive: true,
-          cutout: '60%',
-          plugins: {
-            legend: {
-              display: true,
-              position: 'right',
-              labels: { color: '#e6edf3', font: { size: 11 }, padding: 8, boxWidth: 11 },
-            },
-            tooltip: {
-              callbacks: {
-                label: ctx => ' ' + ctx.label + ': ' + (ctx.raw / total * 100).toFixed(1) + '%  (' + usd(ctx.raw, 0) + ')',
-              },
-            },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: '#e6edf3', font: { size: 10, weight: '600' } } },
+          y: { grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#7d8590', font: { size: 10 }, callback: v => '$' + (Math.abs(v) >= 1000 ? (v/1000).toFixed(1)+'k' : v) } },
+        },
+      },
+    });
+
+    // ── 4. Day vs All-Time grouped bars ────────────────────────────
+    const byMkt = [...equity].sort((a, b) => b.mktVal - a.mktVal).slice(0, 12);
+    if (pnlChartInst) { pnlChartInst.destroy(); pnlChartInst = null; }
+    pnlChartInst = new Chart($('pnlChart'), {
+      type: 'bar',
+      data: {
+        labels: byMkt.map(p => p.symbol),
+        datasets: [
+          {
+            label: "Today's P&L",
+            data: byMkt.map(p => parseFloat(p.dayPnl.toFixed(2))),
+            backgroundColor: byMkt.map(p => p.dayPnl >= 0 ? 'rgba(63,185,80,0.8)' : 'rgba(248,81,73,0.8)'),
+            borderColor: byMkt.map(p => p.dayPnl >= 0 ? '#3fb950' : '#f85149'),
+            borderWidth: 1, borderRadius: 3,
           },
+          {
+            label: 'All-Time P&L',
+            data: byMkt.map(p => parseFloat(p.totalPnl.toFixed(2))),
+            backgroundColor: byMkt.map(p => p.totalPnl >= 0 ? 'rgba(56,139,253,0.55)' : 'rgba(248,81,73,0.35)'),
+            borderColor: byMkt.map(p => p.totalPnl >= 0 ? '#388bfd' : '#f85149'),
+            borderWidth: 1, borderRadius: 3,
+          },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: true, position: 'top', labels: { color: '#7d8590', font: { size: 10 }, boxWidth: 10, padding: 10 } },
+          tooltip: { callbacks: { label: ctx => ' ' + ctx.dataset.label + ': ' + (ctx.raw >= 0 ? '+' : '') + usd(ctx.raw) } },
         },
-      });
-    } catch(_) {}
+        scales: {
+          x: { grid: { display: false }, ticks: { color: '#e6edf3', font: { size: 10, weight: '600' } } },
+          y: { grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#7d8590', font: { size: 10 }, callback: v => '$' + (Math.abs(v) >= 1000 ? (v/1000).toFixed(1)+'k' : v) } },
+        },
+      },
+    });
+
+    // ── 5. Concentration risk scatter: weight % (x) vs return % (y) ──
+    if (scatterChartInst) { scatterChartInst.destroy(); scatterChartInst = null; }
+    scatterChartInst = new Chart($('scatterChart'), {
+      type: 'scatter',
+      data: {
+        datasets: [{
+          label: 'Positions',
+          data: equity.map(p => ({ x: parseFloat(p.weight.toFixed(2)), y: parseFloat(p.totalPct.toFixed(2)), sym: p.symbol })),
+          backgroundColor: equity.map(p => p.totalPct >= 0 ? 'rgba(63,185,80,0.7)' : 'rgba(248,81,73,0.7)'),
+          borderColor: equity.map(p => p.totalPct >= 0 ? '#3fb950' : '#f85149'),
+          borderWidth: 1, pointRadius: 6, pointHoverRadius: 8,
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => `${ctx.raw.sym}: ${ctx.parsed.x.toFixed(1)}% of portfolio, ${ctx.parsed.y.toFixed(1)}% return` } },
+        },
+        scales: {
+          x: { title: { display: true, text: 'Portfolio Weight %', color: '#7d8590', font: { size: 10 } },
+               grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#7d8590', font: { size: 10 }, callback: v => v + '%' },
+               min: 0 },
+          y: { title: { display: true, text: 'Total Return %', color: '#7d8590', font: { size: 10 } },
+               grid: { color: 'rgba(255,255,255,0.06)' }, ticks: { color: '#7d8590', font: { size: 10 }, callback: v => v + '%' } },
+        },
+      },
+      plugins: [{
+        id: 'symbolLabels',
+        afterDatasetsDraw(chart) {
+          const { ctx, data } = chart;
+          ctx.save();
+          ctx.font = '600 9px ui-sans-serif,system-ui,sans-serif';
+          ctx.fillStyle = '#e6edf3';
+          ctx.textAlign = 'center';
+          data.datasets[0].data.forEach((pt, i) => {
+            const meta = chart.getDatasetMeta(0);
+            if (!meta.data[i]) return;
+            const { x, y } = meta.data[i].getProps(['x','y']);
+            ctx.fillText(pt.sym, x, y - 9);
+          });
+          ctx.restore();
+        },
+      }],
+    });
   }
 
   // ── Earnings calendar ─────────────────────────────────────────
